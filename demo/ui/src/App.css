@@ -653,6 +653,116 @@ section h2 {
 }
 
 /* ========================================
+   Live Badge
+   ======================================== */
+
+.live-badge {
+  font-size: 0.625rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0.25rem 0.5rem;
+  background: var(--accent-red);
+  color: white;
+  border-radius: 4px;
+  animation: livePulse 2s ease infinite;
+}
+
+@keyframes livePulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+/* ========================================
+   Error Section
+   ======================================== */
+
+.error-section {
+  margin-bottom: 1rem;
+}
+
+.error-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem;
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid var(--accent-red);
+  border-radius: var(--border-radius);
+  color: var(--accent-red);
+}
+
+.error-banner .error-icon {
+  font-size: 1.25rem;
+}
+
+.error-banner span {
+  flex: 1;
+}
+
+.error-banner button {
+  background: none;
+  border: none;
+  color: var(--accent-red);
+  font-size: 1.25rem;
+  cursor: pointer;
+  padding: 0.25rem;
+  line-height: 1;
+  opacity: 0.7;
+  transition: opacity var(--transition-fast);
+}
+
+.error-banner button:hover {
+  opacity: 1;
+}
+
+/* ========================================
+   Timeline Enhancements
+   ======================================== */
+
+.timeline-hint {
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  margin-top: 0.5rem;
+}
+
+.timeline-step.error .step-number {
+  background: var(--accent-red);
+  border-color: var(--accent-red);
+  color: white;
+}
+
+.timeline-step.error .step-content {
+  border-color: var(--accent-red);
+}
+
+.step-number.error {
+  background: var(--accent-red) !important;
+  border-color: var(--accent-red) !important;
+}
+
+.explorer-link {
+  display: inline-block;
+  margin-top: 0.75rem;
+  padding: 0.5rem 1rem;
+  background: rgba(168, 85, 247, 0.15);
+  color: var(--accent-purple);
+  text-decoration: none;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: all var(--transition-fast);
+}
+
+.explorer-link:hover {
+  background: rgba(168, 85, 247, 0.25);
+}
+
+/* ========================================
    Responsive
    ======================================== */
 

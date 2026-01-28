@@ -43,12 +43,12 @@ function StatusPanel({ title, status, details, icon }) {
 }
 
 function TimelineStep({ step, isActive, isCompleted }) {
-  const { title, description, details, actor, target, timestamp } = step
+  const { title, description, details, actor, target, timestamp, isError } = step
 
   return (
-    <div className={`timeline-step ${isActive ? 'active' : ''} ${isCompleted ? 'completed' : ''}`}>
+    <div className={`timeline-step ${isActive ? 'active' : ''} ${isCompleted ? 'completed' : ''} ${isError ? 'error' : ''}`}>
       <div className="step-connector">
-        <div className="step-number">{step.step}</div>
+        <div className={`step-number ${isError ? 'error' : ''}`}>{step.step || '!'}</div>
         <div className="step-line" />
       </div>
 
@@ -86,6 +86,17 @@ function TimelineStep({ step, isActive, isCompleted }) {
           <div className="step-details">
             <pre>{JSON.stringify(details, null, 2)}</pre>
           </div>
+        )}
+
+        {details?.explorerUrl && (
+          <a
+            href={details.explorerUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="explorer-link"
+          >
+            View on Explorer →
+          </a>
         )}
       </div>
     </div>
@@ -142,8 +153,28 @@ function App() {
   const [steps, setSteps] = useState([])
   const [currentStep, setCurrentStep] = useState(0)
   const [activeActor, setActiveActor] = useState(null)
+  const [serverStatus, setServerStatus] = useState(null)
+  const [error, setError] = useState(null)
   const eventSourceRef = useRef(null)
   const timelineRef = useRef(null)
+
+  // Fetch server status
+  useEffect(() => {
+    const fetchStatus = async () => {
+      try {
+        const res = await fetch(`${DEMO_SERVER}/demo/status`)
+        if (res.ok) {
+          const data = await res.json()
+          setServerStatus(data)
+        }
+      } catch (e) {
+        console.log('Server not ready yet')
+      }
+    }
+    fetchStatus()
+    const interval = setInterval(fetchStatus, 5000)
+    return () => clearInterval(interval)
+  }, [])
 
   // Connect to SSE endpoint
   useEffect(() => {
@@ -154,6 +185,7 @@ function App() {
       es.onopen = () => {
         console.log('SSE Connected')
         setConnected(true)
+        setError(null)
       }
 
       es.onmessage = (event) => {
@@ -169,6 +201,14 @@ function App() {
           setCurrentStep(0)
           setActiveActor(null)
           setFlowActive(false)
+          setError(null)
+          return
+        }
+
+        if (data.type === 'flow_error') {
+          setError(data.description || data.details?.error)
+          setFlowActive(false)
+          setSteps(prev => [...prev, { ...data, step: prev.length + 1 }])
           return
         }
 
@@ -213,20 +253,31 @@ function App() {
   }, [steps])
 
   const startFlow = useCallback(async () => {
+    setError(null)
     try {
-      await fetch(`${DEMO_SERVER}/demo/start-flow`, { method: 'POST' })
-    } catch (error) {
-      console.error('Failed to start flow:', error)
+      const res = await fetch(`${DEMO_SERVER}/demo/start-flow`, { method: 'POST' })
+      if (!res.ok) {
+        const data = await res.json()
+        setError(data.error || 'Failed to start flow')
+      }
+    } catch (err) {
+      setError('Failed to connect to demo server')
     }
   }, [])
 
   const resetFlow = useCallback(async () => {
+    setError(null)
     try {
       await fetch(`${DEMO_SERVER}/demo/reset`, { method: 'POST' })
-    } catch (error) {
-      console.error('Failed to reset flow:', error)
+    } catch (err) {
+      console.error('Failed to reset flow:', err)
     }
   }, [])
+
+  const formatAddress = (addr) => {
+    if (!addr) return 'N/A'
+    return `${addr.slice(0, 6)}...${addr.slice(-4)}`
+  }
 
   return (
     <div className="app">
@@ -235,6 +286,7 @@ function App() {
           <h1>
             <span className="logo">402</span>
             x402 Payment Flow Demo
+            <span className="live-badge">LIVE</span>
           </h1>
           <div className="connection-status">
             <span className={`status-dot ${connected ? 'connected' : 'disconnected'}`} />
@@ -254,28 +306,38 @@ function App() {
           <div className="status-grid">
             <StatusPanel
               title="Weather Server"
-              status="running"
+              status={serverStatus ? 'running' : 'idle'}
               icon="🌤️"
               details={{
-                'Port': '4021',
+                'Port': serverStatus?.resourceServer?.port || '4021',
                 'Endpoint': 'GET /weather',
                 'Price': '0.0001 USDT0',
-                'Network': 'Plasma'
+                'Pay To': formatAddress(serverStatus?.resourceServer?.payTo)
               }}
             />
             <StatusPanel
               title="Facilitator"
-              status="running"
+              status={serverStatus ? 'running' : 'idle'}
               icon="⚡"
               details={{
-                'Port': '4022',
+                'Port': serverStatus?.facilitator?.port || '4022',
                 'Chain': 'Plasma (9745)',
                 'Token': 'USDT0',
-                'Scheme': 'exact'
+                'Address': formatAddress(serverStatus?.facilitator?.address)
               }}
             />
           </div>
         </section>
+
+        {error && (
+          <section className="error-section">
+            <div className="error-banner">
+              <span className="error-icon">⚠️</span>
+              <span>{error}</span>
+              <button onClick={() => setError(null)}>×</button>
+            </div>
+          </section>
+        )}
 
         <section className="action-section">
           <button
@@ -316,12 +378,15 @@ function App() {
           <div className="timeline" ref={timelineRef}>
             {steps.length === 0 ? (
               <div className="timeline-empty">
-                <p>Click "Access Weather App" to start the payment flow demo</p>
+                <p>Click "Access Weather App" to start a <strong>real</strong> payment flow</p>
+                <p className="timeline-hint">
+                  This will execute an actual USDT0 transfer on Plasma blockchain
+                </p>
               </div>
             ) : (
               steps.map((step, index) => (
                 <TimelineStep
-                  key={step.timestamp}
+                  key={step.timestamp || index}
                   step={step}
                   isActive={index === steps.length - 1 && flowActive}
                   isCompleted={index < steps.length - 1 || !flowActive}
@@ -334,12 +399,14 @@ function App() {
 
       <footer className="footer">
         <p>
-          x402 Protocol Demo — Built with USDT0 on Plasma
+          x402 Protocol Demo — Real payments with USDT0 on Plasma
         </p>
         <p className="footer-links">
           <a href="https://x402.org" target="_blank" rel="noopener">x402.org</a>
           <span className="separator">•</span>
           <a href="https://plasma.to" target="_blank" rel="noopener">plasma.to</a>
+          <span className="separator">•</span>
+          <a href="https://explorer.plasma.to" target="_blank" rel="noopener">Explorer</a>
         </p>
       </footer>
     </div>

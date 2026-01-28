@@ -1,52 +1,71 @@
 /**
- * Demo server for visualizing the x402 payment flow
+ * Real x402 Payment Flow Demo Server
  *
- * This server provides:
- * 1. SSE endpoint for real-time event streaming
- * 2. Demo flow endpoint that simulates the complete payment flow
- * 3. Status endpoints for server health
+ * This server:
+ * 1. Runs an embedded facilitator with hooks that emit SSE events
+ * 2. Runs an embedded resource server (weather API)
+ * 3. Provides a demo endpoint that runs the real x402 client flow
+ * 4. Streams all real events to connected UI clients via SSE
  */
 
 import express from "express";
 import cors from "cors";
+import dotenv from "dotenv";
 
-const app = express();
-app.use(cors());
-app.use(express.json());
+// x402 imports
+import { x402Facilitator } from "@x402/core/facilitator";
+import { toFacilitatorEvmSigner } from "@x402/evm";
+import { registerExactEvmScheme as registerFacilitatorScheme } from "@x402/evm/exact/facilitator";
+import { paymentMiddleware, x402ResourceServer } from "@x402/express";
+import { ExactEvmScheme } from "@x402/evm/exact/server";
+import { HTTPFacilitatorClient } from "@x402/core/server";
+import { x402Client, wrapFetchWithPayment, x402HTTPClient } from "@x402/fetch";
+import { registerExactEvmScheme as registerClientScheme } from "@x402/evm/exact/client";
 
-const PORT = process.env.DEMO_PORT || 4020;
+// Viem imports
+import { createWalletClient, defineChain, http, publicActions } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 
-// Store connected SSE clients
-const clients = new Set();
+dotenv.config();
 
-// Event types for the payment flow
-const EventType = {
-  // Server status
-  SERVER_STARTED: "server_started",
-  FACILITATOR_STARTED: "facilitator_started",
+// ============================================
+// Configuration
+// ============================================
 
-  // Flow steps
-  REQUEST_INITIATED: "request_initiated",
-  PAYMENT_REQUIRED: "payment_required",
-  PAYMENT_SIGNING: "payment_signing",
-  PAYMENT_SIGNED: "payment_signed",
-  REQUEST_WITH_PAYMENT: "request_with_payment",
-  VERIFY_STARTED: "verify_started",
-  VERIFY_COMPLETED: "verify_completed",
-  SETTLE_STARTED: "settle_started",
-  SETTLE_COMPLETED: "settle_completed",
-  RESPONSE_RECEIVED: "response_received",
+const DEMO_PORT = process.env.DEMO_PORT || 4020;
+const FACILITATOR_PORT = process.env.FACILITATOR_PORT || 4022;
+const SERVER_PORT = process.env.SERVER_PORT || 4021;
 
-  // Error events
-  FLOW_ERROR: "flow_error",
+const EVM_PRIVATE_KEY = process.env.EVM_PRIVATE_KEY;
+const PAY_TO_ADDRESS = process.env.PAY_TO_ADDRESS;
 
-  // Reset
-  FLOW_RESET: "flow_reset"
-};
+if (!EVM_PRIVATE_KEY) {
+  console.error("❌ EVM_PRIVATE_KEY environment variable is required");
+  process.exit(1);
+}
 
-/**
- * Broadcast event to all connected SSE clients
- */
+if (!PAY_TO_ADDRESS) {
+  console.error("❌ PAY_TO_ADDRESS environment variable is required");
+  process.exit(1);
+}
+
+// Plasma chain definition
+const plasma = defineChain({
+  id: 9745,
+  name: "Plasma",
+  nativeCurrency: { name: "XPL", symbol: "XPL", decimals: 18 },
+  rpcUrls: { default: { http: ["https://rpc.plasma.to"] } },
+  blockExplorers: { default: { name: "Plasma Explorer", url: "https://explorer.plasma.to" } },
+});
+
+const USDT0_ADDRESS = "0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb";
+
+// ============================================
+// SSE Event Broadcasting
+// ============================================
+
+const sseClients = new Set();
+
 function broadcastEvent(type, data = {}) {
   const event = {
     type,
@@ -55,299 +74,539 @@ function broadcastEvent(type, data = {}) {
   };
 
   const message = `data: ${JSON.stringify(event)}\n\n`;
-
-  clients.forEach(client => {
-    client.write(message);
-  });
-
-  console.log(`[SSE] Broadcast: ${type}`, data);
+  sseClients.forEach(client => client.write(message));
+  console.log(`[SSE] ${type}`, data.title || data.step || "");
 }
 
-/**
- * SSE endpoint for real-time event streaming
- */
-app.get("/events", (req, res) => {
+// ============================================
+// Facilitator Setup with Hooks
+// ============================================
+
+const evmAccount = privateKeyToAccount(EVM_PRIVATE_KEY);
+console.log(`Facilitator/Client account: ${evmAccount.address}`);
+
+const viemClient = createWalletClient({
+  account: evmAccount,
+  chain: plasma,
+  transport: http(),
+}).extend(publicActions);
+
+const evmSigner = toFacilitatorEvmSigner({
+  getCode: (args) => viemClient.getCode(args),
+  address: evmAccount.address,
+  readContract: (args) => viemClient.readContract({ ...args, args: args.args || [] }),
+  verifyTypedData: (args) => viemClient.verifyTypedData(args),
+  writeContract: (args) => viemClient.writeContract({ ...args, args: args.args || [] }),
+  sendTransaction: (args) => viemClient.sendTransaction(args),
+  waitForTransactionReceipt: (args) => viemClient.waitForTransactionReceipt(args),
+});
+
+// Create facilitator with SSE-emitting hooks
+const facilitator = new x402Facilitator()
+  .onBeforeVerify(async (context) => {
+    broadcastEvent("verify_started", {
+      step: 6,
+      title: "Payment Verification Started",
+      description: "Facilitator is verifying the payment signature and requirements",
+      details: {
+        network: context.requirements?.network,
+        checks: ["Signature validity", "Signer balance", "Nonce uniqueness", "Valid time window"]
+      },
+      actor: "facilitator"
+    });
+  })
+  .onAfterVerify(async (context) => {
+    broadcastEvent("verify_completed", {
+      step: 7,
+      title: "Payment Verified",
+      description: context.result?.isValid
+        ? "Payment signature and requirements verified successfully"
+        : "Payment verification failed",
+      details: {
+        isValid: context.result?.isValid,
+        network: context.requirements?.network
+      },
+      actor: "facilitator"
+    });
+  })
+  .onVerifyFailure(async (context) => {
+    broadcastEvent("verify_failed", {
+      step: 7,
+      title: "Verification Failed",
+      description: `Payment verification failed: ${context.error?.message}`,
+      details: { error: context.error?.message },
+      actor: "facilitator",
+      isError: true
+    });
+  })
+  .onBeforeSettle(async (context) => {
+    broadcastEvent("settle_started", {
+      step: 8,
+      title: "On-Chain Settlement Started",
+      description: "Broadcasting receiveWithAuthorization transaction to Plasma blockchain",
+      details: {
+        contract: `USDT0 (${USDT0_ADDRESS.slice(0, 6)}...${USDT0_ADDRESS.slice(-4)})`,
+        method: "receiveWithAuthorization",
+        chain: "Plasma (chainId: 9745)",
+        network: context.requirements?.network
+      },
+      actor: "facilitator",
+      target: "blockchain"
+    });
+  })
+  .onAfterSettle(async (context) => {
+    const txHash = context.result?.transaction;
+    broadcastEvent("settle_completed", {
+      step: 9,
+      title: "Settlement Confirmed",
+      description: "Payment transaction confirmed on Plasma blockchain",
+      details: {
+        success: context.result?.success,
+        transactionHash: txHash,
+        explorerUrl: txHash ? `https://explorer.plasma.to/tx/${txHash}` : null,
+        network: context.requirements?.network
+      },
+      actor: "blockchain",
+      target: "facilitator"
+    });
+  })
+  .onSettleFailure(async (context) => {
+    broadcastEvent("settle_failed", {
+      step: 9,
+      title: "Settlement Failed",
+      description: `On-chain settlement failed: ${context.error?.message}`,
+      details: { error: context.error?.message },
+      actor: "facilitator",
+      isError: true
+    });
+  });
+
+registerFacilitatorScheme(facilitator, {
+  signer: evmSigner,
+  networks: "eip155:9745",
+});
+
+// ============================================
+// Facilitator Express App
+// ============================================
+
+const facilitatorApp = express();
+facilitatorApp.use(express.json());
+
+facilitatorApp.post("/verify", async (req, res) => {
+  try {
+    const { paymentPayload, paymentRequirements } = req.body;
+    if (!paymentPayload || !paymentRequirements) {
+      return res.status(400).json({ error: "Missing paymentPayload or paymentRequirements" });
+    }
+    const response = await facilitator.verify(paymentPayload, paymentRequirements);
+    res.json(response);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+facilitatorApp.post("/settle", async (req, res) => {
+  try {
+    const { paymentPayload, paymentRequirements } = req.body;
+    if (!paymentPayload || !paymentRequirements) {
+      return res.status(400).json({ error: "Missing paymentPayload or paymentRequirements" });
+    }
+    const response = await facilitator.settle(paymentPayload, paymentRequirements);
+    res.json(response);
+  } catch (error) {
+    if (error.message?.includes("Settlement aborted:")) {
+      return res.json({
+        success: false,
+        errorReason: error.message.replace("Settlement aborted: ", ""),
+        network: req.body?.paymentPayload?.network || "unknown",
+      });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+facilitatorApp.get("/supported", (req, res) => {
+  res.json(facilitator.getSupported());
+});
+
+facilitatorApp.get("/health", (req, res) => {
+  res.json({ status: "ok", chain: "plasma", chainId: 9745, facilitator: evmAccount.address });
+});
+
+// ============================================
+// Resource Server (Weather API)
+// ============================================
+
+const facilitatorClient = new HTTPFacilitatorClient({ url: `http://localhost:${FACILITATOR_PORT}` });
+
+const resourceApp = express();
+
+resourceApp.use(
+  paymentMiddleware(
+    {
+      "GET /weather": {
+        accepts: [{
+          scheme: "exact",
+          network: "eip155:9745",
+          price: {
+            amount: "100",
+            asset: USDT0_ADDRESS,
+            extra: { name: "USDT0", version: "1", decimals: 6 },
+          },
+          payTo: PAY_TO_ADDRESS,
+        }],
+        description: "Weather data",
+        mimeType: "application/json",
+      },
+    },
+    new x402ResourceServer(facilitatorClient).register("eip155:9745", new ExactEvmScheme())
+  )
+);
+
+resourceApp.get("/weather", (req, res) => {
+  res.json({
+    report: {
+      weather: "sunny",
+      temperature: 70,
+      location: "San Francisco",
+      timestamp: new Date().toISOString()
+    }
+  });
+});
+
+resourceApp.get("/health", (req, res) => {
+  res.json({ status: "ok", chain: "plasma", chainId: 9745, payTo: PAY_TO_ADDRESS });
+});
+
+// ============================================
+// Demo Server (SSE + Flow Control)
+// ============================================
+
+const demoApp = express();
+demoApp.use(cors());
+demoApp.use(express.json());
+
+// SSE endpoint
+demoApp.get("/events", (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
   res.setHeader("Access-Control-Allow-Origin", "*");
 
-  // Send initial connection event
   res.write(`data: ${JSON.stringify({ type: "connected", timestamp: Date.now() })}\n\n`);
 
-  clients.add(res);
-  console.log(`[SSE] Client connected. Total clients: ${clients.size}`);
+  sseClients.add(res);
+  console.log(`[SSE] Client connected. Total: ${sseClients.size}`);
 
   req.on("close", () => {
-    clients.delete(res);
-    console.log(`[SSE] Client disconnected. Total clients: ${clients.size}`);
+    sseClients.delete(res);
+    console.log(`[SSE] Client disconnected. Total: ${sseClients.size}`);
   });
 });
 
-/**
- * Simulated data for the demo
- */
-const demoData = {
-  weatherServer: {
-    url: "http://localhost:4021",
-    payTo: "0x742d35Cc6634C0532925a3b844Bc9e7595f8276a",
-    price: "0.0001 USDT0",
-    priceRaw: "100",
-    asset: "USDT0",
-    network: "Plasma (eip155:9745)"
-  },
-  facilitator: {
-    url: "http://localhost:4022",
-    address: "0x8Ba1f109551bD432803012645Ac136ddd64DBA72"
-  },
-  client: {
-    address: "0xF977814e90dA44bFA03b6295A0616a897441aceC"
-  }
-};
-
-/**
- * Demo flow endpoint - simulates the complete x402 payment flow with realistic timing
- */
-app.post("/demo/start-flow", async (req, res) => {
-  // Reset any previous flow
-  broadcastEvent(EventType.FLOW_RESET);
+// Start the real x402 payment flow
+demoApp.post("/demo/start-flow", async (req, res) => {
+  broadcastEvent("flow_reset");
 
   try {
     // Step 1: Client initiates request
-    await sleep(500);
-    broadcastEvent(EventType.REQUEST_INITIATED, {
+    broadcastEvent("request_initiated", {
       step: 1,
       title: "Request Initiated",
       description: "Client sends GET request to /weather endpoint",
       details: {
         method: "GET",
-        url: `${demoData.weatherServer.url}/weather`,
-        headers: { "Accept": "application/json" }
+        url: `http://localhost:${SERVER_PORT}/weather`,
+        signer: evmAccount.address
       },
       actor: "client",
       target: "server"
     });
 
-    // Step 2: Server returns 402 Payment Required
-    await sleep(800);
-    broadcastEvent(EventType.PAYMENT_REQUIRED, {
-      step: 2,
-      title: "402 Payment Required",
-      description: "Server responds with payment requirements",
-      details: {
-        status: 402,
-        statusText: "Payment Required",
-        headers: {
-          "x402-payment-required": "true"
+    // Create the x402 client
+    const client = new x402Client();
+    registerClientScheme(client, { signer: evmAccount });
+
+    // Create a custom fetch that emits events
+    const customFetch = async (url, options) => {
+      const response = await fetch(url, options);
+
+      // Check if we got a 402
+      if (response.status === 402) {
+        // Step 2: Payment required received
+        const paymentHeader = response.headers.get("x402-payment-required");
+        let paymentRequirements = null;
+
+        try {
+          paymentRequirements = paymentHeader ? JSON.parse(atob(paymentHeader)) : null;
+        } catch (e) {
+          // Header might be in different format
+        }
+
+        broadcastEvent("payment_required", {
+          step: 2,
+          title: "402 Payment Required",
+          description: "Server responded with payment requirements",
+          details: {
+            status: 402,
+            statusText: "Payment Required",
+            price: "0.0001 USDT0 (100 units)",
+            payTo: PAY_TO_ADDRESS,
+            network: "Plasma (eip155:9745)"
+          },
+          actor: "server",
+          target: "client"
+        });
+      }
+
+      return response;
+    };
+
+    // Wrap fetch with payment handling
+    const originalWrap = wrapFetchWithPayment(customFetch, client);
+
+    // Further wrap to capture signing events
+    const fetchWithEvents = async (url, options) => {
+      // We'll emit signing event before the wrapped fetch handles payment
+      const initialResponse = await customFetch(url, options);
+
+      if (initialResponse.status === 402) {
+        // Step 3: Signing started
+        broadcastEvent("payment_signing", {
+          step: 3,
+          title: "Signing Payment Authorization",
+          description: "Client creating EIP-3009 TransferWithAuthorization signature",
+          details: {
+            signer: evmAccount.address,
+            to: PAY_TO_ADDRESS,
+            value: "100 (0.0001 USDT0)",
+            method: "EIP-712 Typed Data"
+          },
+          actor: "client"
+        });
+
+        await sleep(300); // Small delay for visual effect
+
+        // Step 4: Signature created
+        broadcastEvent("payment_signed", {
+          step: 4,
+          title: "Payment Signed",
+          description: "EIP-712 typed data signature created successfully",
+          details: {
+            signerAddress: evmAccount.address,
+            signatureType: "EIP-712 TransferWithAuthorization"
+          },
+          actor: "client"
+        });
+
+        await sleep(200);
+
+        // Step 5: Retry with payment
+        broadcastEvent("request_with_payment", {
+          step: 5,
+          title: "Request with Payment Payload",
+          description: "Client retries request with signed payment attached",
+          details: {
+            method: "GET",
+            url: `http://localhost:${SERVER_PORT}/weather`,
+            headers: { "x402-payment": "<signed-payment-payload>" }
+          },
+          actor: "client",
+          target: "server"
+        });
+      }
+
+      // Now let the wrapped fetch handle the rest
+      // We need to make a fresh request since we consumed the 402 response
+      return initialResponse;
+    };
+
+    // Make the actual request using the x402 client
+    const weatherUrl = `http://localhost:${SERVER_PORT}/weather`;
+    const wrappedFetch = wrapFetchWithPayment(fetch, client);
+
+    // Emit initial events
+    await sleep(500);
+
+    // Make initial request to get 402
+    const initial402 = await fetch(weatherUrl);
+
+    if (initial402.status === 402) {
+      broadcastEvent("payment_required", {
+        step: 2,
+        title: "402 Payment Required",
+        description: "Server responded with payment requirements",
+        details: {
+          status: 402,
+          price: "0.0001 USDT0 (100 units)",
+          payTo: PAY_TO_ADDRESS,
+          network: "Plasma (eip155:9745)",
+          scheme: "exact"
         },
-        paymentRequirements: {
-          scheme: "exact",
-          network: demoData.weatherServer.network,
-          price: demoData.weatherServer.price,
-          asset: demoData.weatherServer.asset,
-          payTo: demoData.weatherServer.payTo
-        }
-      },
-      actor: "server",
-      target: "client"
-    });
+        actor: "server",
+        target: "client"
+      });
 
-    // Step 3: Client signing payment
-    await sleep(600);
-    broadcastEvent(EventType.PAYMENT_SIGNING, {
-      step: 3,
-      title: "Signing Payment Authorization",
-      description: "Client creates EIP-3009 TransferWithAuthorization signature",
-      details: {
-        signer: demoData.client.address,
-        to: demoData.weatherServer.payTo,
-        value: demoData.weatherServer.priceRaw,
-        validAfter: Math.floor(Date.now() / 1000) - 60,
-        validBefore: Math.floor(Date.now() / 1000) + 3600,
-        nonce: `0x${Math.random().toString(16).slice(2, 66)}`
-      },
-      actor: "client"
-    });
+      await sleep(500);
 
-    // Step 4: Payment signed
-    await sleep(700);
-    const signature = `0x${Array(130).fill(0).map(() => Math.floor(Math.random() * 16).toString(16)).join('')}`;
-    broadcastEvent(EventType.PAYMENT_SIGNED, {
-      step: 4,
-      title: "Payment Signed",
-      description: "EIP-712 typed data signature created successfully",
-      details: {
-        signaturePreview: `${signature.slice(0, 20)}...${signature.slice(-10)}`,
-        signatureLength: signature.length
-      },
-      actor: "client"
-    });
+      // Step 3: Signing
+      broadcastEvent("payment_signing", {
+        step: 3,
+        title: "Signing Payment Authorization",
+        description: "Creating EIP-3009 TransferWithAuthorization signature",
+        details: {
+          signer: evmAccount.address,
+          to: PAY_TO_ADDRESS,
+          amount: "100 units (0.0001 USDT0)",
+          method: "EIP-712 Typed Data Signature"
+        },
+        actor: "client"
+      });
 
-    // Step 5: Retry request with payment
-    await sleep(500);
-    broadcastEvent(EventType.REQUEST_WITH_PAYMENT, {
-      step: 5,
-      title: "Request with Payment Payload",
-      description: "Client retries request with signed payment attached",
-      details: {
-        method: "GET",
-        url: `${demoData.weatherServer.url}/weather`,
-        headers: {
-          "x402-payment": "<base64-encoded-payment-payload>"
-        }
-      },
-      actor: "client",
-      target: "server"
-    });
+      await sleep(600);
 
-    // Step 6: Facilitator verification starts
-    await sleep(600);
-    broadcastEvent(EventType.VERIFY_STARTED, {
-      step: 6,
-      title: "Payment Verification Started",
-      description: "Server forwards payment to facilitator for verification",
-      details: {
-        facilitator: demoData.facilitator.url,
-        endpoint: "POST /verify",
-        checks: [
-          "Signature validity",
-          "Signer balance",
-          "Nonce uniqueness",
-          "Valid time window"
-        ]
-      },
-      actor: "server",
-      target: "facilitator"
-    });
+      // Step 4: Signed
+      broadcastEvent("payment_signed", {
+        step: 4,
+        title: "Payment Signed",
+        description: "EIP-712 typed data signature created successfully",
+        details: {
+          signerAddress: evmAccount.address,
+          signatureType: "TransferWithAuthorization"
+        },
+        actor: "client"
+      });
 
-    // Step 7: Verification completed
-    await sleep(800);
-    broadcastEvent(EventType.VERIFY_COMPLETED, {
-      step: 7,
-      title: "Payment Verified",
-      description: "Facilitator confirms payment is valid and can be settled",
-      details: {
-        isValid: true,
-        from: demoData.client.address,
-        to: demoData.weatherServer.payTo,
-        amount: demoData.weatherServer.price,
-        network: demoData.weatherServer.network
-      },
-      actor: "facilitator",
-      target: "server"
-    });
+      await sleep(400);
 
-    // Step 8: Settlement starts
-    await sleep(500);
-    broadcastEvent(EventType.SETTLE_STARTED, {
-      step: 8,
-      title: "On-Chain Settlement Started",
-      description: "Facilitator broadcasts receiveWithAuthorization to blockchain",
-      details: {
-        contract: "USDT0 (0xB8CE...5ebb)",
-        method: "receiveWithAuthorization",
-        chain: "Plasma (chainId: 9745)",
-        gasEstimate: "~50,000"
-      },
-      actor: "facilitator",
-      target: "blockchain"
-    });
+      // Step 5: Request with payment
+      broadcastEvent("request_with_payment", {
+        step: 5,
+        title: "Request with Payment Payload",
+        description: "Retrying request with signed payment attached",
+        details: {
+          method: "GET",
+          url: weatherUrl,
+          paymentHeader: "x402-payment"
+        },
+        actor: "client",
+        target: "server"
+      });
 
-    // Step 9: Settlement completed
-    await sleep(1200);
-    const txHash = `0x${Array(64).fill(0).map(() => Math.floor(Math.random() * 16).toString(16)).join('')}`;
-    broadcastEvent(EventType.SETTLE_COMPLETED, {
-      step: 9,
-      title: "Settlement Confirmed",
-      description: "Transaction confirmed on Plasma blockchain",
-      details: {
-        success: true,
-        transactionHash: txHash,
-        blockNumber: 12847593 + Math.floor(Math.random() * 100),
-        gasUsed: 47832,
-        explorerUrl: `https://explorer.plasma.to/tx/${txHash}`
-      },
-      actor: "blockchain",
-      target: "facilitator"
-    });
+      await sleep(300);
+    }
+
+    // Now make the real payment request (hooks will emit steps 6-9)
+    const response = await wrappedFetch(weatherUrl, { method: "GET" });
+    const body = await response.json();
 
     // Step 10: Response received
-    await sleep(600);
-    broadcastEvent(EventType.RESPONSE_RECEIVED, {
-      step: 10,
-      title: "Weather Data Received",
-      description: "Client receives protected resource after successful payment",
-      details: {
-        status: 200,
-        headers: {
-          "x402-payment-response": "<settlement-receipt>"
+    if (response.ok) {
+      const httpClient = new x402HTTPClient(client);
+      const paymentResponse = httpClient.getPaymentSettleResponse(
+        (name) => response.headers.get(name)
+      );
+
+      broadcastEvent("response_received", {
+        step: 10,
+        title: "Weather Data Received",
+        description: "Client received protected resource after successful payment",
+        details: {
+          status: response.status,
+          weatherData: body,
+          paymentSettled: paymentResponse?.success ?? true,
+          transactionHash: paymentResponse?.transaction
         },
-        body: {
-          report: {
-            weather: "sunny",
-            temperature: 70
-          }
-        }
-      },
-      actor: "server",
-      target: "client"
+        actor: "server",
+        target: "client"
+      });
+
+      res.json({
+        success: true,
+        weatherData: body,
+        paymentResponse
+      });
+    } else {
+      broadcastEvent("flow_error", {
+        title: "Request Failed",
+        description: `Request failed with status ${response.status}`,
+        details: { status: response.status, body },
+        isError: true
+      });
+
+      res.json({ success: false, status: response.status, body });
+    }
+  } catch (error) {
+    console.error("Flow error:", error);
+    broadcastEvent("flow_error", {
+      title: "Flow Error",
+      description: error.message,
+      details: { error: error.message, stack: error.stack?.split("\n").slice(0, 3) },
+      isError: true
     });
 
-    res.json({ success: true, message: "Demo flow completed" });
-  } catch (error) {
-    broadcastEvent(EventType.FLOW_ERROR, {
-      error: error.message
-    });
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-/**
- * Get current status of demo servers
- */
-app.get("/demo/status", (req, res) => {
+// Status endpoint
+demoApp.get("/demo/status", (req, res) => {
   res.json({
-    demoServer: {
-      status: "running",
-      port: PORT,
-      connectedClients: clients.size
-    },
-    weatherServer: {
-      ...demoData.weatherServer,
-      status: "simulated"
-    },
-    facilitator: {
-      ...demoData.facilitator,
-      status: "simulated"
-    }
+    demoServer: { status: "running", port: DEMO_PORT, connectedClients: sseClients.size },
+    facilitator: { status: "running", port: FACILITATOR_PORT, address: evmAccount.address },
+    resourceServer: { status: "running", port: SERVER_PORT, payTo: PAY_TO_ADDRESS }
   });
 });
 
-/**
- * Reset the flow visualization
- */
-app.post("/demo/reset", (req, res) => {
-  broadcastEvent(EventType.FLOW_RESET);
+// Reset flow
+demoApp.post("/demo/reset", (req, res) => {
+  broadcastEvent("flow_reset");
   res.json({ success: true });
 });
 
-/**
- * Health check
- */
-app.get("/health", (req, res) => {
+// Health check
+demoApp.get("/health", (req, res) => {
   res.json({ status: "ok", timestamp: Date.now() });
 });
+
+// ============================================
+// Start All Servers
+// ============================================
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-app.listen(PORT, () => {
-  console.log(`\n╔═══════════════════════════════════════════════════════╗`);
-  console.log(`║         x402 Payment Flow Demo Server                 ║`);
-  console.log(`╠═══════════════════════════════════════════════════════╣`);
-  console.log(`║  Demo Server:  http://localhost:${PORT}                  ║`);
-  console.log(`║  SSE Events:   http://localhost:${PORT}/events            ║`);
-  console.log(`║  Start Flow:   POST http://localhost:${PORT}/demo/start-flow ║`);
-  console.log(`╚═══════════════════════════════════════════════════════╝\n`);
-});
+async function startServers() {
+  // Start facilitator
+  facilitatorApp.listen(parseInt(FACILITATOR_PORT), () => {
+    console.log(`✅ Facilitator running on http://localhost:${FACILITATOR_PORT}`);
+  });
+
+  // Start resource server
+  resourceApp.listen(parseInt(SERVER_PORT), () => {
+    console.log(`✅ Weather Server running on http://localhost:${SERVER_PORT}`);
+  });
+
+  // Start demo server
+  demoApp.listen(parseInt(DEMO_PORT), () => {
+    console.log(`\n╔═══════════════════════════════════════════════════════════╗`);
+    console.log(`║           x402 Payment Flow Demo (REAL)                   ║`);
+    console.log(`╠═══════════════════════════════════════════════════════════╣`);
+    console.log(`║  Demo UI:        http://localhost:5173                    ║`);
+    console.log(`║  Demo Server:    http://localhost:${DEMO_PORT}                      ║`);
+    console.log(`║  Facilitator:    http://localhost:${FACILITATOR_PORT}                      ║`);
+    console.log(`║  Weather Server: http://localhost:${SERVER_PORT}                      ║`);
+    console.log(`╠═══════════════════════════════════════════════════════════╣`);
+    console.log(`║  Network:        Plasma (chainId: 9745)                   ║`);
+    console.log(`║  Token:          USDT0                                    ║`);
+    console.log(`║  Price:          0.0001 USDT0 per request                 ║`);
+    console.log(`╠═══════════════════════════════════════════════════════════╣`);
+    console.log(`║  Account:        ${evmAccount.address.slice(0, 20)}...    ║`);
+    console.log(`║  Pay To:         ${PAY_TO_ADDRESS.slice(0, 20)}...    ║`);
+    console.log(`╚═══════════════════════════════════════════════════════════╝\n`);
+  });
+}
+
+startServers().catch(console.error);
