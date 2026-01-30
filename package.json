@@ -9,7 +9,8 @@
     "facilitator": "node src/facilitator.js",
     "server": "node src/server.js",
     "client": "node src/client.js",
-    "client:mcp": "node src/client-mcp.js"
+    "client:mcp": "node src/client-mcp.js",
+    "dashboard": "node src/mcp-dashboard.js"
   },
   "dependencies": {
     "@x402/core": "^2.2.0",
