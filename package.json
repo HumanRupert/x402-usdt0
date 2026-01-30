@@ -15,7 +15,7 @@
     "@x402/evm": "^2.2.0",
     "@x402/express": "^2.2.0",
     "@x402/fetch": "^2.2.0",
-    "@semanticpay/wdk-x402-evm": "github:HumanRupert/wdk-x402-evm",
+    "@semanticpay/wdk-x402-evm": "github:SemanticPay/wdk-x402-evm",
     "@tetherto/wdk-wallet-evm": "github:HumanRupert/wdk-wallet-evm#feat/add-typedData",
     "cors": "^2.8.6",
     "dotenv": "^17.2.3",
