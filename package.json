@@ -7,7 +7,7 @@
     "demo:ui": "npm run dev --prefix demo/ui",
     "demo:build": "npm run build --prefix demo/ui",
     "facilitator": "node src/facilitator.js",
-    "server": "node src/server.js",
+    "server": "node src/server-facilitatorless.js",
     "client": "node src/client.js",
     "client:mcp": "node src/client-mcp.js"
   },

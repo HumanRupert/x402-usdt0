@@ -1,23 +1,8 @@
-/**
- * MCP Server with x402 Payment Integration
- *
- * Creates an MCP server that exposes a tool for fetching data from an
- * x402-protected weather endpoint on Plasma chain using USDT0.
- *
- * Required environment variables:
- * - MNEMONIC: BIP-39 mnemonic seed phrase (derived account must have USDT0 balance)
- * - RESOURCE_SERVER_URL: The base URL of the resource server (default: http://localhost:4021)
- * - ENDPOINT_PATH: The endpoint path (default: /weather)
- */
-
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { config } from "dotenv";
 import { x402Client, wrapFetchWithPayment } from "@x402/fetch";
 import { registerExactEvmScheme } from "@x402/evm/exact/client";
 import WalletManagerEvm from "@tetherto/wdk-wallet-evm";
-
-config();
 
 const mnemonic = process.env.MNEMONIC;
 const baseURL = process.env.RESOURCE_SERVER_URL || "http://localhost:4021";
@@ -27,9 +12,6 @@ if (!mnemonic) {
   throw new Error("MNEMONIC environment variable is required");
 }
 
-/**
- * Creates a fetch function wrapped with x402 payment support for EVM.
- */
 async function createClient() {
   const evmSigner = await new WalletManagerEvm(mnemonic, {
     provider: "https://rpc.plasma.to",
@@ -49,10 +31,13 @@ async function main() {
     version: "1.0.0",
   });
 
-  server.tool(
+  server.registerTool(
     "get-weather",
-    "Get weather data from the x402-protected weather endpoint",
-    {},
+    {
+      title: "Get Weather",
+      description: "Get weather data from the x402-protected weather endpoint",
+      inputSchema: {},
+    },
     async () => {
       const res = await fetchWithPayment(`${baseURL}${endpointPath}`);
       const data = await res.json();
