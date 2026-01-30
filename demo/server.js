@@ -14,7 +14,6 @@ import dotenv from "dotenv";
 
 // x402 imports
 import { x402Facilitator } from "@x402/core/facilitator";
-import { toFacilitatorEvmSigner } from "@x402/evm";
 import { registerExactEvmScheme as registerFacilitatorScheme } from "@x402/evm/exact/facilitator";
 import { paymentMiddleware, x402ResourceServer } from "@x402/express";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
@@ -22,9 +21,9 @@ import { HTTPFacilitatorClient } from "@x402/core/server";
 import { x402Client, wrapFetchWithPayment, x402HTTPClient } from "@x402/fetch";
 import { registerExactEvmScheme as registerClientScheme } from "@x402/evm/exact/client";
 
-// Viem imports
-import { createWalletClient, defineChain, http, publicActions } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
+// WDK imports
+import WalletAccountEvmFacilitator from "@semanticpay/wdk-x402-evm";
+import WalletManagerEvm from "@tetherto/wdk-wallet-evm";
 
 dotenv.config();
 
@@ -36,11 +35,11 @@ const DEMO_PORT = process.env.DEMO_PORT || 4020;
 const FACILITATOR_PORT = process.env.FACILITATOR_PORT || 4022;
 const SERVER_PORT = process.env.SERVER_PORT || 4021;
 
-const EVM_PRIVATE_KEY = process.env.EVM_PRIVATE_KEY;
+const MNEMONIC = process.env.MNEMONIC;
 const PAY_TO_ADDRESS = process.env.PAY_TO_ADDRESS;
 
-if (!EVM_PRIVATE_KEY) {
-  console.error("❌ EVM_PRIVATE_KEY environment variable is required");
+if (!MNEMONIC) {
+  console.error("❌ MNEMONIC environment variable is required");
   process.exit(1);
 }
 
@@ -48,15 +47,6 @@ if (!PAY_TO_ADDRESS) {
   console.error("❌ PAY_TO_ADDRESS environment variable is required");
   process.exit(1);
 }
-
-// Plasma chain definition
-const plasma = defineChain({
-  id: 9745,
-  name: "Plasma",
-  nativeCurrency: { name: "XPL", symbol: "XPL", decimals: 18 },
-  rpcUrls: { default: { http: ["https://rpc.plasma.to"] } },
-  blockExplorers: { default: { name: "Plasma Explorer", url: "https://explorer.plasma.to" } },
-});
 
 const USDT0_ADDRESS = "0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb";
 
@@ -79,27 +69,15 @@ function broadcastEvent(type, data = {}) {
 }
 
 // ============================================
-// Facilitator Setup with Hooks
+// Wallet + Facilitator Setup with Hooks
 // ============================================
 
-const evmAccount = privateKeyToAccount(EVM_PRIVATE_KEY);
-console.log(`Facilitator/Client account: ${evmAccount.address}`);
+const walletAccount = await new WalletManagerEvm(MNEMONIC, {
+  provider: "https://rpc.plasma.to",
+}).getAccount();
+console.log(`Facilitator/Client account: ${walletAccount.address}`);
 
-const viemClient = createWalletClient({
-  account: evmAccount,
-  chain: plasma,
-  transport: http(),
-}).extend(publicActions);
-
-const evmSigner = toFacilitatorEvmSigner({
-  getCode: (args) => viemClient.getCode(args),
-  address: evmAccount.address,
-  readContract: (args) => viemClient.readContract({ ...args, args: args.args || [] }),
-  verifyTypedData: (args) => viemClient.verifyTypedData(args),
-  writeContract: (args) => viemClient.writeContract({ ...args, args: args.args || [] }),
-  sendTransaction: (args) => viemClient.sendTransaction(args),
-  waitForTransactionReceipt: (args) => viemClient.waitForTransactionReceipt(args),
-});
+const evmSigner = new WalletAccountEvmFacilitator(walletAccount);
 
 // Create facilitator with SSE-emitting hooks
 const facilitator = new x402Facilitator()
@@ -231,7 +209,7 @@ facilitatorApp.get("/supported", (req, res) => {
 });
 
 facilitatorApp.get("/health", (req, res) => {
-  res.json({ status: "ok", chain: "plasma", chainId: 9745, facilitator: evmAccount.address });
+  res.json({ status: "ok", chain: "plasma", chainId: 9745, facilitator: walletAccount.address });
 });
 
 // ============================================
@@ -318,7 +296,7 @@ demoApp.post("/demo/start-flow", async (req, res) => {
       details: {
         method: "GET",
         url: `http://localhost:${SERVER_PORT}/weather`,
-        signer: evmAccount.address
+        signer: walletAccount.address
       },
       actor: "client",
       target: "server"
@@ -326,101 +304,7 @@ demoApp.post("/demo/start-flow", async (req, res) => {
 
     // Create the x402 client
     const client = new x402Client();
-    registerClientScheme(client, { signer: evmAccount });
-
-    // Create a custom fetch that emits events
-    const customFetch = async (url, options) => {
-      const response = await fetch(url, options);
-
-      // Check if we got a 402
-      if (response.status === 402) {
-        // Step 2: Payment required received
-        const paymentHeader = response.headers.get("x402-payment-required");
-        let paymentRequirements = null;
-
-        try {
-          paymentRequirements = paymentHeader ? JSON.parse(atob(paymentHeader)) : null;
-        } catch (e) {
-          // Header might be in different format
-        }
-
-        broadcastEvent("payment_required", {
-          step: 2,
-          title: "402 Payment Required",
-          description: "Server responded with payment requirements",
-          details: {
-            status: 402,
-            statusText: "Payment Required",
-            price: "0.0001 USDT0 (100 units)",
-            payTo: PAY_TO_ADDRESS,
-            network: "Plasma (eip155:9745)"
-          },
-          actor: "server",
-          target: "client"
-        });
-      }
-
-      return response;
-    };
-
-    // Wrap fetch with payment handling
-    const originalWrap = wrapFetchWithPayment(customFetch, client);
-
-    // Further wrap to capture signing events
-    const fetchWithEvents = async (url, options) => {
-      // We'll emit signing event before the wrapped fetch handles payment
-      const initialResponse = await customFetch(url, options);
-
-      if (initialResponse.status === 402) {
-        // Step 3: Signing started
-        broadcastEvent("payment_signing", {
-          step: 3,
-          title: "Signing Payment Authorization",
-          description: "Client creating EIP-3009 TransferWithAuthorization signature",
-          details: {
-            signer: evmAccount.address,
-            to: PAY_TO_ADDRESS,
-            value: "100 (0.0001 USDT0)",
-            method: "EIP-712 Typed Data"
-          },
-          actor: "client"
-        });
-
-        await sleep(300); // Small delay for visual effect
-
-        // Step 4: Signature created
-        broadcastEvent("payment_signed", {
-          step: 4,
-          title: "Payment Signed",
-          description: "EIP-712 typed data signature created successfully",
-          details: {
-            signerAddress: evmAccount.address,
-            signatureType: "EIP-712 TransferWithAuthorization"
-          },
-          actor: "client"
-        });
-
-        await sleep(200);
-
-        // Step 5: Retry with payment
-        broadcastEvent("request_with_payment", {
-          step: 5,
-          title: "Request with Payment Payload",
-          description: "Client retries request with signed payment attached",
-          details: {
-            method: "GET",
-            url: `http://localhost:${SERVER_PORT}/weather`,
-            headers: { "x402-payment": "<signed-payment-payload>" }
-          },
-          actor: "client",
-          target: "server"
-        });
-      }
-
-      // Now let the wrapped fetch handle the rest
-      // We need to make a fresh request since we consumed the 402 response
-      return initialResponse;
-    };
+    registerClientScheme(client, { signer: walletAccount });
 
     // Make the actual request using the x402 client
     const weatherUrl = `http://localhost:${SERVER_PORT}/weather`;
@@ -456,7 +340,7 @@ demoApp.post("/demo/start-flow", async (req, res) => {
         title: "Signing Payment Authorization",
         description: "Creating EIP-3009 TransferWithAuthorization signature",
         details: {
-          signer: evmAccount.address,
+          signer: walletAccount.address,
           to: PAY_TO_ADDRESS,
           amount: "100 units (0.0001 USDT0)",
           method: "EIP-712 Typed Data Signature"
@@ -472,7 +356,7 @@ demoApp.post("/demo/start-flow", async (req, res) => {
         title: "Payment Signed",
         description: "EIP-712 typed data signature created successfully",
         details: {
-          signerAddress: evmAccount.address,
+          signerAddress: walletAccount.address,
           signatureType: "TransferWithAuthorization"
         },
         actor: "client"
@@ -554,7 +438,7 @@ demoApp.post("/demo/start-flow", async (req, res) => {
 demoApp.get("/demo/status", (req, res) => {
   res.json({
     demoServer: { status: "running", port: DEMO_PORT, connectedClients: sseClients.size },
-    facilitator: { status: "running", port: FACILITATOR_PORT, address: evmAccount.address },
+    facilitator: { status: "running", port: FACILITATOR_PORT, address: walletAccount.address },
     resourceServer: { status: "running", port: SERVER_PORT, payTo: PAY_TO_ADDRESS }
   });
 });
@@ -603,7 +487,7 @@ async function startServers() {
     console.log(`║  Token:          USDT0                                    ║`);
     console.log(`║  Price:          0.0001 USDT0 per request                 ║`);
     console.log(`╠═══════════════════════════════════════════════════════════╣`);
-    console.log(`║  Account:        ${evmAccount.address.slice(0, 20)}...    ║`);
+    console.log(`║  Account:        ${walletAccount.address.slice(0, 20)}...    ║`);
     console.log(`║  Pay To:         ${PAY_TO_ADDRESS.slice(0, 20)}...    ║`);
     console.log(`╚═══════════════════════════════════════════════════════════╝\n`);
   });
