@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import './App.css'
 
-const DEMO_SERVER = 'http://localhost:4020'
+const DEMO_SERVER = 'http://localhost:4021'
 
 // Actor colors for the flow visualization
 const actorColors = {
@@ -116,21 +116,10 @@ function ArchitectureDiagram({ activeActor }) {
         <div className="connection-arrow">→</div>
       </div>
 
-      <div className={`arch-node server ${activeActor === 'server' ? 'active' : ''}`}>
+      <div className={`arch-node server ${activeActor === 'server' || activeActor === 'facilitator' ? 'active' : ''}`}>
         <div className="node-icon">🌤️</div>
-        <div className="node-label">Weather Server</div>
-        <div className="node-sublabel">:4021</div>
-      </div>
-
-      <div className="arch-connection horizontal">
-        <div className="connection-line" />
-        <div className="connection-arrow">→</div>
-      </div>
-
-      <div className={`arch-node facilitator ${activeActor === 'facilitator' ? 'active' : ''}`}>
-        <div className="node-icon">⚡</div>
-        <div className="node-label">Facilitator</div>
-        <div className="node-sublabel">:4022</div>
+        <div className="node-label">Server</div>
+        <div className="node-sublabel">facilitator in-process</div>
       </div>
 
       <div className="arch-connection horizontal">
@@ -168,7 +157,7 @@ function App() {
           setServerStatus(data)
         }
       } catch (e) {
-        console.log('Server not ready yet')
+        // Server not ready yet
       }
     }
     fetchStatus()
@@ -218,8 +207,8 @@ function App() {
           setActiveActor(data.actor || data.target)
           setFlowActive(true)
 
-          // Check if flow is complete
-          if (data.type === 'response_received') {
+          // Check if flow is complete (settlement is the last async step)
+          if (data.type === 'settle_completed' || data.type === 'settle_failed') {
             setTimeout(() => {
               setFlowActive(false)
               setActiveActor(null)
@@ -305,25 +294,16 @@ function App() {
           <h2>Service Status</h2>
           <div className="status-grid">
             <StatusPanel
-              title="Weather Server"
+              title="Server (facilitator in-process)"
               status={serverStatus ? 'running' : 'idle'}
               icon="🌤️"
               details={{
-                'Port': serverStatus?.resourceServer?.port || '4021',
+                'Port': serverStatus?.server?.port || '4021',
                 'Endpoint': 'GET /weather',
                 'Price': '0.0001 USDT0',
-                'Pay To': formatAddress(serverStatus?.resourceServer?.payTo)
-              }}
-            />
-            <StatusPanel
-              title="Facilitator"
-              status={serverStatus ? 'running' : 'idle'}
-              icon="⚡"
-              details={{
-                'Port': serverStatus?.facilitator?.port || '4022',
                 'Chain': 'Plasma (9745)',
-                'Token': 'USDT0',
-                'Address': formatAddress(serverStatus?.facilitator?.address)
+                'Address': formatAddress(serverStatus?.server?.address),
+                'Pay To': formatAddress(serverStatus?.server?.payTo)
               }}
             />
           </div>
