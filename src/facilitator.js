@@ -1,86 +1,25 @@
 import { x402Facilitator } from "@x402/core/facilitator";
-import { toFacilitatorEvmSigner } from "@x402/evm";
 import { registerExactEvmScheme } from "@x402/evm/exact/facilitator";
+import WalletAccountEvmFacilitator from "@semanticpay/wdk-x402-evm";
+import WalletManagerEvm from "@tetherto/wdk-wallet-evm";
 import dotenv from "dotenv";
 import express from "express";
-import { createWalletClient, defineChain, http, publicActions } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
 
 dotenv.config();
-console.log(process.env.EVM_PRIVATE_KEY)
-
-/** @type {import('viem').Chain} */
-const plasma = defineChain({
-  id: 9745,
-  name: "Plasma",
-  nativeCurrency: {
-    name: "XPL",
-    symbol: "XPL",
-    decimals: 18,
-  },
-  rpcUrls: {
-    default: { http: ["https://rpc.plasma.to"] },
-  },
-  blockExplorers: {
-    default: { name: "Plasma Explorer", url: "https://explorer.plasma.to" },
-  },
-});
 
 const PORT = process.env.PORT || "4022";
 
-if (!process.env.EVM_PRIVATE_KEY) {
-  console.error("❌ EVM_PRIVATE_KEY environment variable is required");
+if (!process.env.MNEMONIC) {
+  console.error("❌ MNEMONIC environment variable is required");
   process.exit(1);
 }
 
-const evmAccount = privateKeyToAccount(
-  /** @type {`0x${string}`} */ (process.env.EVM_PRIVATE_KEY)
-);
-console.info(`Facilitator account: ${evmAccount.address}`);
+const walletAccount = await new WalletManagerEvm(process.env.MNEMONIC, {
+  provider: "https://rpc.plasma.to",
+}).getAccount();
+console.info(`Facilitator account: ${walletAccount.address}`);
 
-const viemClient = createWalletClient({
-  account: evmAccount,
-  chain: plasma,
-  transport: http(),
-}).extend(publicActions);
-
-const evmSigner = toFacilitatorEvmSigner({
-  /**
-   * @param {{ address: `0x${string}` }} args
-   */
-  getCode: (args) => viemClient.getCode(args),
-  address: evmAccount.address,
-  /**
-   * @param {{ address: `0x${string}`, abi: readonly unknown[], functionName: string, args?: readonly unknown[] }} args
-   */
-  readContract: (args) =>
-    viemClient.readContract({
-      ...args,
-      args: args.args || [],
-    }),
-  /**
-   * @param {{ address: `0x${string}`, domain: Record<string, unknown>, types: Record<string, unknown>, primaryType: string, message: Record<string, unknown>, signature: `0x${string}` }} args
-   */
-  verifyTypedData: (args) =>
-    viemClient.verifyTypedData(/** @type {any} */ (args)),
-  /**
-   * @param {{ address: `0x${string}`, abi: readonly unknown[], functionName: string, args: readonly unknown[] }} args
-   */
-  writeContract: (args) =>
-    viemClient.writeContract({
-      ...args,
-      args: args.args || [],
-    }),
-  /**
-   * @param {{ to: `0x${string}`, data: `0x${string}` }} args
-   */
-  sendTransaction: (args) => viemClient.sendTransaction(args),
-  /**
-   * @param {{ hash: `0x${string}` }} args
-   */
-  waitForTransactionReceipt: (args) =>
-    viemClient.waitForTransactionReceipt(args),
-});
+const evmSigner = new WalletAccountEvmFacilitator(walletAccount);
 
 const facilitator = new x402Facilitator()
   .onBeforeVerify(async (context) => {
@@ -213,7 +152,7 @@ app.get("/health", (req, res) => {
     status: "ok",
     chain: "plasma",
     chainId: 9745,
-    facilitator: evmAccount.address,
+    facilitator: walletAccount.address,
   });
 });
 
