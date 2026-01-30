@@ -3,7 +3,7 @@
   "type": "module",
   "scripts": {
     "demo": "npm run demo:server & npm run demo:ui",
-    "demo:server": "node demo/server.js",
+    "demo:server": "node src/server-facilitatorless.js",
     "demo:ui": "npm run dev --prefix demo/ui",
     "demo:build": "npm run build --prefix demo/ui",
     "facilitator": "node src/facilitator.js",
