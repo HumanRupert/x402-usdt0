@@ -7,7 +7,7 @@ import { x402ResourceServer, x402HTTPResourceServer } from "@x402/express";
 import { ExactEvmScheme as ServerEvmScheme } from "@x402/evm/exact/server";
 import { x402Client, wrapFetchWithPayment } from "@x402/fetch";
 import { registerExactEvmScheme as registerClientScheme } from "@x402/evm/exact/client";
-import WalletAccountEvmFacilitator from "@semanticpay/wdk-x402-evm";
+import WalletAccountEvmX402Facilitator from "@semanticpay/wdk-wallet-evm-x402-facilitator";
 import WalletManagerEvm from "@tetherto/wdk-wallet-evm";
 import { USDT0_ADDRESS, PLASMA_RPC, PLASMA_NETWORK, PRICE_UNITS } from "./config.js";
 import { verifyFirstMiddleware } from "./middleware.js";
@@ -40,7 +40,7 @@ const walletAccount = await new WalletManagerEvm(MNEMONIC, {
   provider: PLASMA_RPC,
 }).getAccount();
 
-const evmSigner = new WalletAccountEvmFacilitator(walletAccount);
+const evmSigner = new WalletAccountEvmX402Facilitator(walletAccount);
 
 const facilitator = new x402Facilitator()
   .onBeforeVerify(async (context) => {

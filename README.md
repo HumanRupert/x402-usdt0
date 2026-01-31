@@ -75,14 +75,14 @@ console.log(Number(balance) / 1e6, "USDT0");
 
 For detailed documentation about the WDK ecosystem, visit [docs.wallet.tether.io](https://docs.wallet.tether.io).
 
-### @semanticpay/wdk-x402-evm
+### @semanticpay/wdk-wallet-evm-x402-facilitator
 
 Bridges WDK wallets to the x402 facilitator signer interface. Wraps a `WalletAccountEvm` so it can be passed to x402's `registerExactEvmScheme` as a facilitator signer:
 
 ```js
-import WalletAccountEvmFacilitator from "@semanticpay/wdk-x402-evm";
+import WalletAccountEvmX402Facilitator from "@semanticpay/wdk-wallet-evm-x402-facilitator";
 
-const evmSigner = new WalletAccountEvmFacilitator(walletAccount);
+const evmSigner = new WalletAccountEvmX402Facilitator(walletAccount);
 
 registerFacilitatorScheme(facilitator, {
   signer: evmSigner,
@@ -260,5 +260,5 @@ bin/
 | `@x402/fetch` | Fetch wrapper that handles 402 responses automatically |
 | `@x402/evm` | EVM payment scheme (EIP-3009 TransferWithAuthorization) |
 | `@tetherto/wdk-wallet-evm` | BIP-39/BIP-44 EVM wallet management (signing, balances) |
-| `@semanticpay/wdk-x402-evm` | Adapter bridging WDK wallets to x402 facilitator signer interface |
+| `@semanticpay/wdk-wallet-evm-x402-facilitator` | Adapter bridging WDK wallets to x402 facilitator signer interface |
 | `@modelcontextprotocol/sdk` | MCP server SDK for Claude Desktop integration |
