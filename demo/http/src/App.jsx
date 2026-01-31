@@ -3,7 +3,6 @@ import './App.css'
 
 const DEMO_SERVER = 'http://localhost:4021'
 
-// Actor colors for the flow visualization
 const actorColors = {
   client: '#3b82f6',
   server: '#22c55e',
@@ -147,7 +146,6 @@ function App() {
   const eventSourceRef = useRef(null)
   const timelineRef = useRef(null)
 
-  // Fetch server status
   useEffect(() => {
     const fetchStatus = async () => {
       try {
@@ -156,16 +154,13 @@ function App() {
           const data = await res.json()
           setServerStatus(data)
         }
-      } catch (e) {
-        // Server not ready yet
-      }
+      } catch (e) {}
     }
     fetchStatus()
     const interval = setInterval(fetchStatus, 5000)
     return () => clearInterval(interval)
   }, [])
 
-  // Connect to SSE endpoint
   useEffect(() => {
     const connect = () => {
       const es = new EventSource(`${DEMO_SERVER}/events`)
@@ -207,7 +202,6 @@ function App() {
           setActiveActor(data.actor || data.target)
           setFlowActive(true)
 
-          // Check if flow is complete (settlement is the last async step)
           if (data.type === 'settle_completed' || data.type === 'settle_failed') {
             setTimeout(() => {
               setFlowActive(false)
@@ -234,7 +228,6 @@ function App() {
     }
   }, [])
 
-  // Auto-scroll timeline
   useEffect(() => {
     if (timelineRef.current && steps.length > 0) {
       timelineRef.current.scrollTop = timelineRef.current.scrollHeight

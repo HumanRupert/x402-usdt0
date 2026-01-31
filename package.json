@@ -2,19 +2,24 @@
   "name": "x402-usdt0",
   "type": "module",
   "scripts": {
-    "demo": "npm run demo:server & npm run demo:ui",
-    "demo:server": "node src/server-facilitatorless.js",
-    "demo:ui": "npm run dev --prefix demo/ui",
-    "demo:build": "npm run build --prefix demo/ui",
-    "facilitator": "node src/facilitator.js",
-    "server": "node src/server.js",
-    "client": "node src/client.js"
+    "setup": "node bin/setup.js",
+    "server": "node x402/server.js",
+    "server:external": "node x402/server-external.js",
+    "facilitator": "node x402/facilitator.js",
+    "client": "node x402/client.js",
+    "client:mcp": "node demo/mcp/server.js",
+    "demo:http": "npm run dev --prefix demo/http",
+    "demo:http:build": "npm run build --prefix demo/http",
+    "dashboard": "node demo/mcp/dashboard.js",
+    "dashboard:ui": "npm run dev --prefix demo/mcp",
+    "dashboard:build": "npm run build --prefix demo/mcp"
   },
   "dependencies": {
     "@x402/core": "^2.2.0",
     "@x402/evm": "^2.2.0",
     "@x402/express": "^2.2.0",
     "@x402/fetch": "^2.2.0",
+    "@modelcontextprotocol/sdk": "^1.12.1",
     "@semanticpay/wdk-x402-evm": "github:SemanticPay/wdk-x402-evm",
     "@tetherto/wdk-wallet-evm": "github:HumanRupert/wdk-wallet-evm#feat/add-typedData",
     "cors": "^2.8.6",
@@ -22,9 +27,6 @@
     "express": "^5.2.1"
   },
   "devDependencies": {
-    "@types/express": "^5.0.6",
-    "concurrently": "^9.1.2",
-    "tsx": "^4.21.0",
-    "typescript": "^5.9.3"
+    "concurrently": "^9.1.2"
   }
 }

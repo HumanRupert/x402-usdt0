@@ -1,38 +1,22 @@
 import { config } from "dotenv";
 import express from "express";
 import cors from "cors";
-
-// x402 core
 import { x402Facilitator } from "@x402/core/facilitator";
 import { registerExactEvmScheme as registerFacilitatorScheme } from "@x402/evm/exact/facilitator";
-import {
-  x402ResourceServer,
-  x402HTTPResourceServer,
-  ExpressAdapter,
-} from "@x402/express";
+import { x402ResourceServer, x402HTTPResourceServer } from "@x402/express";
 import { ExactEvmScheme as ServerEvmScheme } from "@x402/evm/exact/server";
-
-// x402 client
 import { x402Client, wrapFetchWithPayment } from "@x402/fetch";
 import { registerExactEvmScheme as registerClientScheme } from "@x402/evm/exact/client";
-
-// WDK
 import WalletAccountEvmFacilitator from "@semanticpay/wdk-x402-evm";
 import WalletManagerEvm from "@tetherto/wdk-wallet-evm";
+import { USDT0_ADDRESS, PLASMA_RPC, PLASMA_NETWORK, PRICE_UNITS } from "./config.js";
+import { verifyFirstMiddleware } from "./middleware.js";
 
 config();
 
-// ============================================
-// Configuration
-// ============================================
-
 const PORT = process.env.PORT || 4021;
 const MNEMONIC = process.env.MNEMONIC;
-
-/** @type {`0x${string}`} */
-const PAY_TO_ADDRESS = /** @type {`0x${string}`} */ (
-  process.env.PAY_TO_ADDRESS
-);
+const PAY_TO_ADDRESS = process.env.PAY_TO_ADDRESS;
 
 if (!MNEMONIC) {
   console.error("MNEMONIC environment variable is required");
@@ -44,30 +28,17 @@ if (!PAY_TO_ADDRESS) {
   process.exit(1);
 }
 
-const USDT0_ADDRESS = "0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb";
-
-// ============================================
-// SSE Event Broadcasting
-// ============================================
-
 const sseClients = new Set();
 
 function broadcastEvent(type, data = {}) {
   const event = { type, timestamp: Date.now(), ...data };
   const message = `data: ${JSON.stringify(event)}\n\n`;
   sseClients.forEach((client) => client.write(message));
-  console.log(`[SSE] ${type}`, data.title || data.step || "");
 }
 
-// ============================================
-// Wallet + Facilitator with SSE hooks
-// ============================================
-
 const walletAccount = await new WalletManagerEvm(MNEMONIC, {
-  provider: "https://rpc.plasma.to",
+  provider: PLASMA_RPC,
 }).getAccount();
-
-console.log(`Account: ${walletAccount.address}`);
 
 const evmSigner = new WalletAccountEvmFacilitator(walletAccount);
 
@@ -76,16 +47,10 @@ const facilitator = new x402Facilitator()
     broadcastEvent("verify_started", {
       step: 6,
       title: "Payment Verification Started",
-      description:
-        "Facilitator is verifying the payment signature and requirements",
+      description: "Facilitator is verifying the payment signature and requirements",
       details: {
         network: context.requirements?.network,
-        checks: [
-          "Signature validity",
-          "Signer balance",
-          "Nonce uniqueness",
-          "Valid time window",
-        ],
+        checks: ["Signature validity", "Signer balance", "Nonce uniqueness", "Valid time window"],
       },
       actor: "facilitator",
     });
@@ -118,8 +83,7 @@ const facilitator = new x402Facilitator()
     broadcastEvent("settle_started", {
       step: 9,
       title: "On-Chain Settlement Started",
-      description:
-        "Broadcasting receiveWithAuthorization transaction to Plasma blockchain",
+      description: "Broadcasting receiveWithAuthorization transaction to Plasma blockchain",
       details: {
         contract: `USDT0 (${USDT0_ADDRESS.slice(0, 6)}...${USDT0_ADDRESS.slice(-4)})`,
         method: "receiveWithAuthorization",
@@ -139,9 +103,7 @@ const facilitator = new x402Facilitator()
       details: {
         success: context.result?.success,
         transactionHash: txHash,
-        explorerUrl: txHash
-          ? `https://explorer.plasma.to/tx/${txHash}`
-          : null,
+        explorerUrl: txHash ? `https://explorer.plasma.to/tx/${txHash}` : null,
         network: context.requirements?.network,
       },
       actor: "blockchain",
@@ -161,15 +123,11 @@ const facilitator = new x402Facilitator()
 
 registerFacilitatorScheme(facilitator, {
   signer: evmSigner,
-  networks: "eip155:9745",
+  networks: PLASMA_NETWORK,
 });
 
-// ============================================
-// Resource Server + Custom Verify-First Middleware
-// ============================================
-
 const resourceServer = new x402ResourceServer(facilitator).register(
-  "eip155:9745",
+  PLASMA_NETWORK,
   new ServerEvmScheme()
 );
 
@@ -178,9 +136,9 @@ const routes = {
     accepts: [
       {
         scheme: "exact",
-        network: "eip155:9745",
+        network: PLASMA_NETWORK,
         price: {
-          amount: "100",
+          amount: PRICE_UNITS,
           asset: USDT0_ADDRESS,
           extra: { name: "USDT0", version: "1", decimals: 6 },
         },
@@ -193,84 +151,11 @@ const routes = {
 };
 
 const httpServer = new x402HTTPResourceServer(resourceServer, routes);
-let initPromise = httpServer.initialize();
-
-/**
- * Custom payment middleware: verify → respond → settle (async).
- *
- * Unlike the standard paymentMiddleware which buffers the response and
- * settles before sending it, this middleware sends the response immediately
- * after verification and settles on-chain asynchronously afterward.
- */
-function verifyFirstMiddleware() {
-  return async (req, res, next) => {
-    const adapter = new ExpressAdapter(req);
-    const context = {
-      adapter,
-      path: req.path,
-      method: req.method,
-      paymentHeader:
-        adapter.getHeader("payment-signature") ||
-        adapter.getHeader("x-payment"),
-    };
-
-    if (!httpServer.requiresPayment(context)) {
-      return next();
-    }
-
-    if (initPromise) {
-      await initPromise;
-      initPromise = null;
-    }
-
-    const result = await httpServer.processHTTPRequest(context);
-
-    switch (result.type) {
-      case "no-payment-required":
-        return next();
-
-      case "payment-error": {
-        const { response } = result;
-        res.status(response.status);
-        Object.entries(response.headers).forEach(([key, value]) => {
-          res.setHeader(key, value);
-        });
-        if (response.isHtml) {
-          res.send(response.body);
-        } else {
-          res.json(response.body || {});
-        }
-        return;
-      }
-
-      case "payment-verified": {
-        const { paymentPayload, paymentRequirements } = result;
-
-        // Settle AFTER the response is fully sent to the client
-        res.on("finish", () => {
-          httpServer
-            .processSettlement(paymentPayload, paymentRequirements)
-            .then((settleResult) => {
-              if (!settleResult.success) {
-                console.error("Settlement failed:", settleResult.errorReason);
-              }
-            })
-            .catch((err) => console.error("Settlement error:", err));
-        });
-
-        return next();
-      }
-    }
-  };
-}
-
-// ============================================
-// Express App
-// ============================================
+const initPromiseHolder = { promise: httpServer.initialize() };
 
 const app = express();
 app.use(cors());
-app.use(verifyFirstMiddleware());
+app.use(verifyFirstMiddleware(httpServer, initPromiseHolder));
 
 app.get("/weather", (req, res) => {
   res.json({
@@ -283,32 +168,20 @@ app.get("/weather", (req, res) => {
   });
 });
 
-// ============================================
-// SSE Endpoint
-// ============================================
-
 app.get("/events", (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
   res.setHeader("Access-Control-Allow-Origin", "*");
 
-  res.write(
-    `data: ${JSON.stringify({ type: "connected", timestamp: Date.now() })}\n\n`
-  );
+  res.write(`data: ${JSON.stringify({ type: "connected", timestamp: Date.now() })}\n\n`);
 
   sseClients.add(res);
-  console.log(`[SSE] Client connected. Total: ${sseClients.size}`);
 
   req.on("close", () => {
     sseClients.delete(res);
-    console.log(`[SSE] Client disconnected. Total: ${sseClients.size}`);
   });
 });
-
-// ============================================
-// Demo Endpoints
-// ============================================
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -318,7 +191,6 @@ app.post("/demo/start-flow", async (req, res) => {
   broadcastEvent("flow_reset");
 
   try {
-    // Step 1: Client initiates request
     broadcastEvent("request_initiated", {
       step: 1,
       title: "Request Initiated",
@@ -334,12 +206,10 @@ app.post("/demo/start-flow", async (req, res) => {
 
     await sleep(300);
 
-    // Make initial request to get 402
     const weatherUrl = `http://localhost:${PORT}/weather`;
     const initial402 = await fetch(weatherUrl);
 
     if (initial402.status === 402) {
-      // Step 2: 402 received
       broadcastEvent("payment_required", {
         step: 2,
         title: "402 Payment Required",
@@ -357,7 +227,6 @@ app.post("/demo/start-flow", async (req, res) => {
 
       await sleep(300);
 
-      // Step 3: Signing
       broadcastEvent("payment_signing", {
         step: 3,
         title: "Signing Payment Authorization",
@@ -373,7 +242,6 @@ app.post("/demo/start-flow", async (req, res) => {
 
       await sleep(400);
 
-      // Step 4: Signed
       broadcastEvent("payment_signed", {
         step: 4,
         title: "Payment Signed",
@@ -387,7 +255,6 @@ app.post("/demo/start-flow", async (req, res) => {
 
       await sleep(200);
 
-      // Step 5: Request with payment
       broadcastEvent("request_with_payment", {
         step: 5,
         title: "Request with Payment Payload",
@@ -404,10 +271,6 @@ app.post("/demo/start-flow", async (req, res) => {
       await sleep(200);
     }
 
-    // Make the real payment request
-    // Facilitator hooks will emit steps 6 (verify started) and 7 (verify completed)
-    // Then the response is returned immediately (verify-first middleware)
-    // Then settlement hooks fire steps 9 and 10 asynchronously
     const client = new x402Client();
     registerClientScheme(client, { signer: walletAccount });
     const wrappedFetch = wrapFetchWithPayment(fetch, client);
@@ -416,12 +279,10 @@ app.post("/demo/start-flow", async (req, res) => {
     const body = await response.json();
 
     if (response.ok) {
-      // Step 8: Response received (before settlement, which is async)
       broadcastEvent("response_received", {
         step: 8,
         title: "Weather Data Received",
-        description:
-          "Client received protected resource after successful verification",
+        description: "Client received protected resource after successful verification",
         details: {
           status: response.status,
           weatherData: body,
@@ -485,15 +346,10 @@ app.get("/health", (req, res) => {
   });
 });
 
-// ============================================
-// Start Server
-// ============================================
-
 app.listen(PORT, () => {
-  console.log(`\nx402 Facilitatorless Server running on http://localhost:${PORT}`);
-  console.log(`Network:     eip155:9745 (Plasma)`);
-  console.log(`USDT0:       ${USDT0_ADDRESS}`);
+  console.log(`x402 server running on http://localhost:${PORT}`);
+  console.log(`Network: ${PLASMA_NETWORK}`);
+  console.log(`USDT0: ${USDT0_ADDRESS}`);
   console.log(`Facilitator: in-process (${walletAccount.address})`);
-  console.log(`Pay to:      ${PAY_TO_ADDRESS}`);
-  console.log(`Demo UI:     http://localhost:5173\n`);
+  console.log(`Pay to: ${PAY_TO_ADDRESS}`);
 });
