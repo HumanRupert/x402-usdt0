@@ -158,11 +158,10 @@ cp .env.example .env
 Visualizes the full x402 payment flow in the browser with real on-chain transactions.
 
 ```bash
-npm run server       # Terminal 1: x402 server on :4021
-npm run demo:http    # Terminal 2: React UI on :5173
+npm run demo:http
 ```
 
-Open http://localhost:5173 and click "Access Weather App" to trigger a real payment. Each request costs 0.0001 USDT0.
+This starts the x402 server on :4021 and the React UI on :5173. Open http://localhost:5173 and click "Access Weather App" to trigger a real payment. Each request costs 0.0001 USDT0.
 
 ## MCP Demo
 
@@ -171,10 +170,10 @@ Connects Claude Desktop to an x402-protected weather endpoint via MCP.
 ### 1. Start the server and dashboard
 
 ```bash
-npm run server       # Terminal 1: x402 server on :4021
-npm run dashboard    # Terminal 2: Dashboard API on :4030
-npm run dashboard:ui # Terminal 3: React dashboard on :5174 (optional, for dev)
+npm run demo:mcp
 ```
+
+This builds the React dashboard, then starts the x402 server on :4021 and the dashboard on :4030.
 
 ### 2. Configure Claude Desktop
 
@@ -202,7 +201,7 @@ If the file already has other `mcpServers` entries, add `x402-weather` alongside
 
 ### 3. Use it
 
-Restart Claude Desktop and ask it to "get the weather". Each tool call costs 0.0001 USDT0. View call history and balance at http://localhost:4030 (or http://localhost:5174 in dev mode).
+Restart Claude Desktop and ask it to "get the weather". Each tool call costs 0.0001 USDT0. View call history and balance at http://localhost:4030.
 
 ## Project Structure
 
@@ -232,14 +231,8 @@ bin/
 | Script | Description |
 |--------|-------------|
 | `npm run setup` | Interactive setup wizard (creates .env, starts servers, configures Claude Desktop) |
-| `npm run server` | Start x402 resource server with in-process facilitator |
-| `npm run server:external` | Start resource server with external facilitator |
-| `npm run facilitator` | Start standalone facilitator service |
-| `npm run client` | Make a single paid request from the CLI |
-| `npm run client:mcp` | Start the MCP stdio server |
-| `npm run demo:http` | Start HTTP demo UI (Vite dev server) |
-| `npm run dashboard` | Start MCP dashboard API server |
-| `npm run dashboard:ui` | Start MCP dashboard UI (Vite dev server) |
+| `npm run demo:http` | Start x402 server and HTTP demo UI |
+| `npm run demo:mcp` | Build dashboard, start x402 server and MCP dashboard |
 
 ## Network
 

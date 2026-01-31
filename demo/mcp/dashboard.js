@@ -50,7 +50,7 @@ app.get("/api/calls", (req, res) => {
 
 if (existsSync(distPath)) {
   app.use(express.static(distPath));
-  app.get("*", (req, res) => {
+  app.get("/{*splat}", (req, res) => {
     res.sendFile(join(distPath, "index.html"));
   });
 }

@@ -3,16 +3,8 @@
   "type": "module",
   "scripts": {
     "setup": "node bin/setup.js",
-    "server": "node x402/server.js",
-    "server:external": "node x402/server-external.js",
-    "facilitator": "node x402/facilitator.js",
-    "client": "node x402/client.js",
-    "client:mcp": "node demo/mcp/server.js",
-    "demo:http": "npm run dev --prefix demo/http",
-    "demo:http:build": "npm run build --prefix demo/http",
-    "dashboard": "node demo/mcp/dashboard.js",
-    "dashboard:ui": "npm run dev --prefix demo/mcp",
-    "dashboard:build": "npm run build --prefix demo/mcp"
+    "demo:http": "concurrently \"node x402/server.js\" \"npm run dev --prefix demo/http\"",
+    "demo:mcp": "npm run build --prefix demo/mcp && concurrently \"node x402/server.js\" \"node demo/mcp/dashboard.js\""
   },
   "dependencies": {
     "@x402/core": "^2.2.0",
