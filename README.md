@@ -1,6 +1,131 @@
-# x402 USDT0 Demo
+# x402-usdt0
 
-x402 payment protocol demo on Plasma blockchain using USDT0. Includes an HTTP payment flow visualization and an MCP integration for Claude Desktop.
+A working demo of the [x402 payment protocol](https://x402.org) on [Plasma](https://plasma.to) blockchain using USDT0 and the [WDK (Wallet Development Kit)](https://docs.wallet.tether.io). Includes an HTTP payment flow visualization and an MCP integration for Claude Desktop.
+
+## About x402
+
+x402 is a payment protocol built on the HTTP 402 (Payment Required) status code. It enables pay-per-request access to web APIs using on-chain token transfers, without requiring accounts, subscriptions, or API keys.
+
+### Actors
+
+The protocol has three actors:
+
+| Actor | Role |
+|-------|------|
+| **Client** | Requests a protected resource. On receiving a 402 response, signs an EIP-3009 `TransferWithAuthorization` and retries with the signed payment attached. |
+| **Resource Server** | Serves protected endpoints. Returns 402 with payment requirements when no valid payment is present. Once payment is verified, serves the resource. |
+| **Facilitator** | Verifies payment signatures and settles on-chain. Can run in-process (embedded in the server) or as a standalone service. |
+
+### Payment Flow
+
+```
+Client                    Server (+ Facilitator)           Blockchain
+  |                              |                             |
+  |  1. GET /weather             |                             |
+  |----------------------------->|                             |
+  |                              |                             |
+  |  2. 402 Payment Required     |                             |
+  |<-----------------------------|                             |
+  |  (price, asset, payTo, net)  |                             |
+  |                              |                             |
+  |  3. Sign EIP-3009 payload    |                             |
+  |  (TransferWithAuthorization) |                             |
+  |                              |                             |
+  |  4. GET /weather + signature |                             |
+  |----------------------------->|                             |
+  |                              |                             |
+  |             5. Verify signature, balance, nonce            |
+  |                              |                             |
+  |  6. 200 OK + weather data    |                             |
+  |<-----------------------------|                             |
+  |                              |                             |
+  |              7. Settle (async): receiveWithAuthorization   |
+  |                              |---------------------------->|
+  |                              |                             |
+  |                              |  8. Transaction confirmed   |
+  |                              |<----------------------------|
+```
+
+The server uses a **verify-first** pattern: it verifies the payment and responds immediately, then settles on-chain asynchronously after the response is sent. This avoids making the client wait for blockchain confirmation.
+
+## About WDK
+
+This project uses [WDK (Wallet Development Kit)](https://docs.wallet.tether.io) for all wallet operations instead of viem or ethers.
+
+### @tetherto/wdk-wallet-evm
+
+Provides BIP-39/BIP-44 wallet management for EVM chains. Used in this project for:
+
+- Deriving wallet accounts from a mnemonic seed phrase
+- Signing EIP-712 typed data (for x402 payment authorization)
+- Querying ERC-20 token balances (USDT0 on Plasma)
+
+```js
+import WalletManagerEvm from "@tetherto/wdk-wallet-evm";
+
+const walletAccount = await new WalletManagerEvm(mnemonic, {
+  provider: "https://rpc.plasma.to",
+}).getAccount();
+
+console.log(walletAccount.address);
+
+const balance = await walletAccount.getTokenBalance("0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb");
+console.log(Number(balance) / 1e6, "USDT0");
+```
+
+For detailed documentation about the WDK ecosystem, visit [docs.wallet.tether.io](https://docs.wallet.tether.io).
+
+### @semanticpay/wdk-x402-evm
+
+Bridges WDK wallets to the x402 facilitator signer interface. Wraps a `WalletAccountEvm` so it can be passed to x402's `registerExactEvmScheme` as a facilitator signer:
+
+```js
+import WalletAccountEvmFacilitator from "@semanticpay/wdk-x402-evm";
+
+const evmSigner = new WalletAccountEvmFacilitator(walletAccount);
+
+registerFacilitatorScheme(facilitator, {
+  signer: evmSigner,
+  networks: "eip155:9745",
+});
+```
+
+The adapter provides `readContract`, `writeContract`, `verifyTypedData`, `sendTransaction`, and `waitForTransactionReceipt` — everything x402's EVM facilitator needs to verify and settle payments.
+
+## How the Demo Works
+
+### In-Process Facilitator
+
+Both the resource server and facilitator run in a single process (`x402/server.js`). The facilitator is created with lifecycle hooks that broadcast Server-Sent Events (SSE) to connected clients:
+
+```
+onBeforeVerify  → SSE: verify_started
+onAfterVerify   → SSE: verify_completed
+onBeforeSettle  → SSE: settle_started
+onAfterSettle   → SSE: settle_completed
+```
+
+### Verify-First Middleware
+
+The custom middleware in `x402/middleware.js` replaces the standard `paymentMiddleware` from `@x402/express`. It:
+
+1. Calls `httpServer.processHTTPRequest()` to verify the payment
+2. If verified, hooks into `res.on("finish")` to trigger settlement after the response is sent
+3. Calls `next()` to let the route handler send the response immediately
+4. Settlement runs asynchronously via `httpServer.processSettlement()`
+
+### HTTP Demo
+
+The React UI at `demo/http/` connects to the server's SSE endpoint and renders each step of the payment flow in real time as it happens — from the initial 402 response through signature creation, verification, response delivery, and on-chain settlement.
+
+### MCP Demo
+
+The MCP server at `demo/mcp/server.js` is a stdio-based MCP tool server for Claude Desktop. When Claude calls the `get-weather` tool:
+
+1. It makes a paid request to the x402 server using `@x402/fetch`
+2. The payment is signed automatically using the WDK wallet
+3. The tool call is logged to `mcp-calls.json`
+4. The React dashboard at `demo/mcp/` shows the wallet balance and call history
 
 ## Quick Start
 
@@ -9,9 +134,13 @@ npm install
 npm run setup
 ```
 
-The setup wizard will guide you through either the HTTP or MCP demo.
+The setup wizard will:
+- Ask for your environment variables (MNEMONIC, PAY_TO_ADDRESS)
+- Create the `.env` file
+- Start the required servers
+- For MCP: configure Claude Desktop and open the dashboard
 
-## Setup
+## Manual Setup
 
 Copy the environment file and fill in your credentials:
 
@@ -21,8 +150,8 @@ cp .env.example .env
 
 | Variable | Description |
 |----------|-------------|
-| `MNEMONIC` | BIP-39 mnemonic (derived account must have USDT0 on Plasma) |
-| `PAY_TO_ADDRESS` | Address to receive payments |
+| `MNEMONIC` | BIP-39 mnemonic seed phrase. The derived account must have USDT0 balance on Plasma. |
+| `PAY_TO_ADDRESS` | Ethereum address (0x...) to receive payments. |
 
 ## HTTP Demo
 
@@ -33,15 +162,7 @@ npm run server       # Terminal 1: x402 server on :4021
 npm run demo:http    # Terminal 2: React UI on :5173
 ```
 
-Open http://localhost:5173 and click "Access Weather App" to trigger a real payment.
-
-### Architecture
-
-```
-Client → Server (facilitator in-process) → Plasma Blockchain
-```
-
-The server uses a verify-first middleware: it verifies the payment, sends the response immediately, then settles on-chain asynchronously.
+Open http://localhost:5173 and click "Access Weather App" to trigger a real payment. Each request costs 0.0001 USDT0.
 
 ## MCP Demo
 
@@ -51,13 +172,16 @@ Connects Claude Desktop to an x402-protected weather endpoint via MCP.
 
 ```bash
 npm run server       # Terminal 1: x402 server on :4021
-npm run dashboard    # Terminal 2: API server on :4030
+npm run dashboard    # Terminal 2: Dashboard API on :4030
 npm run dashboard:ui # Terminal 3: React dashboard on :5174 (optional, for dev)
 ```
 
 ### 2. Configure Claude Desktop
 
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+Add to your Claude Desktop config:
+
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Linux: `~/.config/Claude/claude_desktop_config.json`
 
 ```json
 {
@@ -74,49 +198,67 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 }
 ```
 
+If the file already has other `mcpServers` entries, add `x402-weather` alongside them. The setup wizard (`npm run setup`) handles this merge automatically.
+
 ### 3. Use it
 
-Restart Claude Desktop and ask it to "get the weather". Each tool call costs 0.0001 USDT0. View call history and balance at http://localhost:5174.
+Restart Claude Desktop and ask it to "get the weather". Each tool call costs 0.0001 USDT0. View call history and balance at http://localhost:4030 (or http://localhost:5174 in dev mode).
 
 ## Project Structure
 
 ```
 x402/
-  config.js            Shared constants (USDT0 address, RPC, network)
-  middleware.js         Verify-first payment middleware
-  server.js            Main server with in-process facilitator + SSE
-  server-external.js   Server using external facilitator via HTTP
-  facilitator.js       Standalone facilitator service
-  client.js            CLI client for paid requests
+  config.js              Shared constants (USDT0 address, RPC URL, network ID, price)
+  middleware.js           Verify-first payment middleware
+  server.js              Resource server with in-process facilitator and SSE events
+  server-external.js     Resource server using an external facilitator via HTTP
+  facilitator.js         Standalone facilitator service (for server-external.js)
+  client.js              CLI client that makes a paid request
 
 demo/
-  http/                Payment flow visualization (React + Vite)
+  http/                  Payment flow visualization (React + Vite, port 5173)
+    src/App.jsx          Timeline UI connected to SSE events
   mcp/
-    server.js          MCP stdio server for Claude Desktop
-    dashboard.js       Express API for balance and call history
-    src/               React dashboard UI
+    server.js            MCP stdio server (get-weather tool) for Claude Desktop
+    dashboard.js         Express API for wallet balance and call history
+    src/App.jsx          React dashboard (balance card, call history table)
 
 bin/
-  setup.js             CLI setup wizard
+  setup.js               Interactive setup wizard
 ```
 
 ## Scripts
 
 | Script | Description |
 |--------|-------------|
-| `npm run setup` | Interactive setup wizard |
-| `npm run server` | Start x402 server (in-process facilitator) |
-| `npm run server:external` | Start server with external facilitator |
-| `npm run facilitator` | Start standalone facilitator |
-| `npm run client` | Make a paid request from CLI |
-| `npm run client:mcp` | Start MCP stdio server |
-| `npm run demo:http` | Start HTTP demo UI (dev) |
-| `npm run dashboard` | Start MCP dashboard API |
-| `npm run dashboard:ui` | Start MCP dashboard UI (dev) |
+| `npm run setup` | Interactive setup wizard (creates .env, starts servers, configures Claude Desktop) |
+| `npm run server` | Start x402 resource server with in-process facilitator |
+| `npm run server:external` | Start resource server with external facilitator |
+| `npm run facilitator` | Start standalone facilitator service |
+| `npm run client` | Make a single paid request from the CLI |
+| `npm run client:mcp` | Start the MCP stdio server |
+| `npm run demo:http` | Start HTTP demo UI (Vite dev server) |
+| `npm run dashboard` | Start MCP dashboard API server |
+| `npm run dashboard:ui` | Start MCP dashboard UI (Vite dev server) |
 
 ## Network
 
-- Chain: Plasma (chainId 9745)
-- RPC: https://rpc.plasma.to
-- USDT0: `0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb`
-- Explorer: https://explorer.plasma.to
+| | |
+|---|---|
+| Chain | Plasma (chainId 9745) |
+| RPC | https://rpc.plasma.to |
+| USDT0 | `0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb` |
+| Explorer | https://explorer.plasma.to |
+| Payment amount | 0.0001 USDT0 (100 base units) per request |
+
+## Key Dependencies
+
+| Package | Purpose |
+|---------|---------|
+| `@x402/core` | x402 protocol core — Client, ResourceServer, Facilitator |
+| `@x402/express` | Express adapter, HTTPResourceServer, payment middleware |
+| `@x402/fetch` | Fetch wrapper that handles 402 responses automatically |
+| `@x402/evm` | EVM payment scheme (EIP-3009 TransferWithAuthorization) |
+| `@tetherto/wdk-wallet-evm` | BIP-39/BIP-44 EVM wallet management (signing, balances) |
+| `@semanticpay/wdk-x402-evm` | Adapter bridging WDK wallets to x402 facilitator signer interface |
+| `@modelcontextprotocol/sdk` | MCP server SDK for Claude Desktop integration |

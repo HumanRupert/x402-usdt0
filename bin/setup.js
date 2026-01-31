@@ -1,58 +1,288 @@
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
+import { spawn, execSync } from "node:child_process";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { homedir, platform } from "node:os";
 
 const cwd = process.cwd();
+const children = [];
 
-const httpInstructions = `
-  HTTP Demo Setup
-  ===============
+process.on("SIGINT", () => {
+  console.log("\nShutting down...");
+  children.forEach((child) => {
+    if (!child.killed) child.kill();
+  });
+  process.exit(0);
+});
 
-  1. Copy and fill in your environment variables:
-     cp .env.example .env
+async function ask(rl, prompt, fallback) {
+  const answer = (await rl.question(prompt)).trim();
+  if (!answer && fallback !== undefined) return fallback;
+  return answer;
+}
 
-  2. Start the x402 server (terminal 1):
-     npm run server
+async function writeEnvFile(rl, vars) {
+  const envPath = join(cwd, ".env");
+  if (existsSync(envPath)) {
+    const overwrite = await ask(rl, "  .env already exists. Overwrite? (y/n): ");
+    if (overwrite.toLowerCase() !== "y") {
+      console.log("  Keeping existing .env\n");
+      return;
+    }
+  }
+  const content = Object.entries(vars)
+    .map(([k, v]) => `${k}=${v}`)
+    .join("\n") + "\n";
+  writeFileSync(envPath, content);
+  console.log("  .env written\n");
+}
 
-  3. Start the demo UI (terminal 2):
-     npm run demo:http
+function spawnBackground(label, cmd, args) {
+  const child = spawn(cmd, args, { cwd, stdio: "pipe" });
+  children.push(child);
 
-  4. Open http://localhost:5173
-`;
+  const ready = new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      console.log(`  [${label}] still starting (continuing anyway)`);
+      resolve();
+    }, 15000);
 
-const mcpInstructions = `
-  MCP Demo Setup
-  ==============
+    child.stdout.on("data", (data) => {
+      const line = data.toString();
+      process.stdout.write(`  [${label}] ${line}`);
+      if (line.includes("running on") || line.includes("listening") || line.includes("Running on") || line.includes("localhost")) {
+        clearTimeout(timeout);
+        resolve();
+      }
+    });
 
-  1. Copy and fill in your environment variables:
-     cp .env.example .env
+    child.stderr.on("data", (data) => {
+      process.stderr.write(`  [${label}] ${data}`);
+    });
 
-  2. Start the x402 server (terminal 1):
-     npm run server
+    child.on("error", (err) => {
+      console.error(`  [${label}] error: ${err.message}`);
+      clearTimeout(timeout);
+      resolve();
+    });
 
-  3. Start the MCP dashboard (terminal 2):
-     npm run dashboard
+    child.on("exit", (code) => {
+      if (code !== null && code !== 0) {
+        console.log(`  [${label}] exited with code ${code}`);
+      }
+      clearTimeout(timeout);
+      resolve();
+    });
+  });
 
-  4. Add to your Claude Desktop config at:
-     ~/Library/Application Support/Claude/claude_desktop_config.json
+  return { child, ready };
+}
 
-     {
-       "mcpServers": {
-         "x402-weather": {
-           "command": "node",
-           "args": ["${cwd}/demo/mcp/server.js"],
-           "env": {
-             "MNEMONIC": "<your mnemonic>",
-             "RESOURCE_SERVER_URL": "http://localhost:4021"
-           }
-         }
-       }
-     }
+function openUrl(url) {
+  try {
+    if (platform() === "darwin") {
+      spawn("open", [url], { detached: true, stdio: "ignore" });
+    } else if (platform() === "linux") {
+      spawn("xdg-open", [url], { detached: true, stdio: "ignore" });
+    } else {
+      console.log(`  Open in browser: ${url}`);
+    }
+  } catch {
+    console.log(`  Open in browser: ${url}`);
+  }
+}
 
-  5. Restart Claude Desktop
+function openApp(name) {
+  try {
+    if (platform() === "darwin") {
+      spawn("open", ["-a", name], { detached: true, stdio: "ignore" });
+    } else {
+      console.log(`  Please open ${name} manually`);
+    }
+  } catch {
+    console.log(`  Please open ${name} manually`);
+  }
+}
 
-  6. Open http://localhost:5174 for the dashboard
-     (or npm run dashboard:ui for dev mode)
-`;
+function getClaudeConfigPath() {
+  if (platform() === "darwin") {
+    return join(homedir(), "Library", "Application Support", "Claude", "claude_desktop_config.json");
+  }
+  return join(homedir(), ".config", "Claude", "claude_desktop_config.json");
+}
+
+function readClaudeConfig(configPath) {
+  if (!existsSync(configPath)) return {};
+  const raw = readFileSync(configPath, "utf-8");
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error(`Claude config at ${configPath} is not valid JSON. Fix it manually before running setup.`);
+  }
+}
+
+function mergeClaudeConfig(existing, entry) {
+  const merged = { ...existing };
+  if (!merged.mcpServers) {
+    merged.mcpServers = {};
+  }
+  merged.mcpServers["x402-weather"] = entry;
+  return merged;
+}
+
+async function collectEnvVars(rl) {
+  console.log("  Environment Variables\n");
+
+  let mnemonic = await ask(rl, "  MNEMONIC (BIP-39 seed phrase): ");
+  if (!mnemonic) {
+    mnemonic = await ask(rl, "  MNEMONIC is required. Try again: ");
+    if (!mnemonic) {
+      console.log("  MNEMONIC is required. Aborting.\n");
+      process.exit(1);
+    }
+  }
+
+  let payTo = await ask(rl, "  PAY_TO_ADDRESS (0x...): ");
+  if (!payTo || !payTo.startsWith("0x")) {
+    payTo = await ask(rl, "  PAY_TO_ADDRESS must start with 0x. Try again: ");
+    if (!payTo || !payTo.startsWith("0x")) {
+      console.log("  Invalid PAY_TO_ADDRESS. Aborting.\n");
+      process.exit(1);
+    }
+  }
+
+  console.log();
+  return { mnemonic, payTo };
+}
+
+async function runHttpFlow(rl) {
+  console.log("\n  HTTP Demo Setup\n");
+
+  const { mnemonic, payTo } = await collectEnvVars(rl);
+  await writeEnvFile(rl, { MNEMONIC: mnemonic, PAY_TO_ADDRESS: payTo });
+
+  console.log("  Starting x402 server...");
+  const server = spawnBackground("server", "node", ["x402/server.js"]);
+  await server.ready;
+
+  console.log("\n  Starting HTTP demo UI...");
+  const ui = spawnBackground("ui", "npx", ["--prefix", "demo/http", "vite", "--config", "demo/http/vite.config.js", "--root", "demo/http"]);
+  await ui.ready;
+
+  console.log();
+  openUrl("http://localhost:5173");
+  console.log("  Opened http://localhost:5173");
+  console.log("\n  Press Ctrl+C to stop all servers.\n");
+
+  rl.close();
+  await new Promise(() => {});
+}
+
+async function runMcpFlow(rl) {
+  console.log("\n  MCP Demo Setup\n");
+
+  const { mnemonic, payTo } = await collectEnvVars(rl);
+  await writeEnvFile(rl, { MNEMONIC: mnemonic, PAY_TO_ADDRESS: payTo });
+
+  console.log("  Building dashboard UI...");
+  try {
+    execSync("npm run dashboard:build", { cwd, stdio: "pipe" });
+    console.log("  Dashboard built\n");
+  } catch {
+    console.log("  Dashboard build failed (dashboard will run without pre-built UI)\n");
+  }
+
+  console.log("  Starting x402 server...");
+  const server = spawnBackground("server", "node", ["x402/server.js"]);
+  await server.ready;
+
+  console.log("\n  Starting MCP dashboard...");
+  const dashboard = spawnBackground("dashboard", "node", ["demo/mcp/dashboard.js"]);
+  await dashboard.ready;
+
+  console.log("\n  Claude Desktop Configuration\n");
+
+  const mcpMnemonic = await ask(
+    rl,
+    `  MNEMONIC for MCP server (Enter to reuse same): `,
+    mnemonic
+  );
+
+  const resourceUrl = await ask(
+    rl,
+    "  RESOURCE_SERVER_URL (Enter for http://localhost:4021): ",
+    "http://localhost:4021"
+  );
+
+  const mcpEntry = {
+    command: "node",
+    args: [join(cwd, "demo/mcp/server.js")],
+    env: {
+      MNEMONIC: mcpMnemonic,
+      RESOURCE_SERVER_URL: resourceUrl,
+    },
+  };
+
+  const configPath = getClaudeConfigPath();
+  console.log(`\n  Claude config: ${configPath}\n`);
+
+  let existing;
+  try {
+    existing = readClaudeConfig(configPath);
+  } catch (err) {
+    console.log(`  ${err.message}`);
+    console.log("  Skipping Claude config. You can add it manually.\n");
+    openUrl("http://localhost:4030");
+    console.log("  Opened http://localhost:4030");
+    console.log("\n  Press Ctrl+C to stop all servers.\n");
+    rl.close();
+    await new Promise(() => {});
+    return;
+  }
+
+  if (existing.mcpServers?.["x402-weather"]) {
+    const overwrite = await ask(rl, "  x402-weather already exists in config. Overwrite? (y/n): ");
+    if (overwrite.toLowerCase() !== "y") {
+      console.log("  Keeping existing config.\n");
+      openUrl("http://localhost:4030");
+      console.log("  Opened http://localhost:4030");
+      console.log("\n  Press Ctrl+C to stop all servers.\n");
+      rl.close();
+      await new Promise(() => {});
+      return;
+    }
+  }
+
+  const merged = mergeClaudeConfig(existing, mcpEntry);
+
+  console.log("\n  Config to write:\n");
+  console.log(JSON.stringify(merged, null, 2).split("\n").map((l) => "  " + l).join("\n"));
+  console.log();
+
+  const confirm = await ask(rl, "  Write this config? (y/n): ");
+
+  if (confirm.toLowerCase() === "y") {
+    const configDir = dirname(configPath);
+    if (!existsSync(configDir)) {
+      mkdirSync(configDir, { recursive: true });
+    }
+    writeFileSync(configPath, JSON.stringify(merged, null, 2) + "\n");
+    console.log("  Claude Desktop config updated.\n");
+
+    console.log("  Opening Claude Desktop...");
+    openApp("Claude");
+  } else {
+    console.log("  Config not written. Add it manually if needed.\n");
+  }
+
+  openUrl("http://localhost:4030");
+  console.log("  Opened http://localhost:4030");
+  console.log("\n  Setup complete. Press Ctrl+C to stop servers.\n");
+
+  rl.close();
+  await new Promise(() => {});
+}
 
 async function main() {
   const rl = createInterface({ input: stdin, output: stdout });
@@ -65,15 +295,15 @@ async function main() {
   2) MCP   - Connect Claude Desktop to a paid weather tool
   `);
 
-  const choice = await rl.question("  Choice (1 or 2): ");
-  rl.close();
+  const choice = await ask(rl, "  Choice (1 or 2): ");
 
-  if (choice.trim() === "1") {
-    console.log(httpInstructions);
-  } else if (choice.trim() === "2") {
-    console.log(mcpInstructions);
+  if (choice === "1") {
+    await runHttpFlow(rl);
+  } else if (choice === "2") {
+    await runMcpFlow(rl);
   } else {
     console.log("\n  Invalid choice. Run again and pick 1 or 2.\n");
+    rl.close();
   }
 }
 
