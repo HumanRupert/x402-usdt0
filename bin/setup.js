@@ -195,7 +195,7 @@ async function runHttpFlow(rl) {
   await server.ready;
 
   console.log("\n  Starting HTTP demo UI...");
-  const ui = spawnBackground("ui", "npx", ["--prefix", "demo/http", "vite", "--config", "demo/http/vite.config.js", "--root", "demo/http"]);
+  const ui = spawnBackground("ui", "npm", ["run", "dev", "--prefix", "demo/http"]);
   await ui.ready;
 
   console.log();
