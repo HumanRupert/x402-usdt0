@@ -53,16 +53,15 @@ const walletAccount = await new WalletManagerEvm(MNEMONIC, {
 
 const EVENT_CALLBACK_URL = `http://localhost:${PORT}/demo/events`;
 
+const eventCallbackHeaders = { "X-Event-Callback": EVENT_CALLBACK_URL };
+
 const facilitatorClient = new HTTPFacilitatorClient({
   url: FACILITATOR_URL,
-  fetch: (url, init) =>
-    fetch(url, {
-      ...init,
-      headers: {
-        ...init?.headers,
-        "X-Event-Callback": EVENT_CALLBACK_URL,
-      },
-    }),
+  createAuthHeaders: async () => ({
+    verify: eventCallbackHeaders,
+    settle: eventCallbackHeaders,
+    supported: {},
+  }),
 });
 
 const resourceServer = new x402ResourceServer(facilitatorClient).register(
