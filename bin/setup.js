@@ -207,6 +207,19 @@ async function runHttpFlow(rl) {
   await new Promise(() => {});
 }
 
+async function finishMcpSetup(rl) {
+  const dashboardUrl = "http://localhost:4030";
+  openUrl(dashboardUrl);
+
+  console.log(`  ┌─────────────────────────────────────────┐`);
+  console.log(`  │  MCP Dashboard: ${dashboardUrl}    │`);
+  console.log(`  └─────────────────────────────────────────┘`);
+  console.log(`\n  Press Ctrl+C to stop all servers.\n`);
+
+  rl.close();
+  await new Promise(() => {});
+}
+
 async function runMcpFlow(rl) {
   console.log("\n  MCP Demo Setup\n");
 
@@ -219,9 +232,17 @@ async function runMcpFlow(rl) {
     FACILITATOR_URL: facilitator.url,
   });
 
+  console.log("  Installing dashboard dependencies...");
+  try {
+    execSync("npm install --prefix demo/mcp", { cwd, stdio: "pipe" });
+    console.log("  Dependencies installed");
+  } catch {
+    console.log("  Warning: dependency install failed\n");
+  }
+
   console.log("  Building dashboard UI...");
   try {
-    execSync("npm run dashboard:build", { cwd, stdio: "pipe" });
+    execSync("npm run build --prefix demo/mcp", { cwd, stdio: "pipe" });
     console.log("  Dashboard built\n");
   } catch {
     console.log("  Dashboard build failed (dashboard will run without pre-built UI)\n");
@@ -274,11 +295,7 @@ async function runMcpFlow(rl) {
   } catch (err) {
     console.log(`  ${err.message}`);
     console.log("  Skipping Claude config. You can add it manually.\n");
-    openUrl("http://localhost:4030");
-    console.log("  Opened http://localhost:4030");
-    console.log("\n  Press Ctrl+C to stop all servers.\n");
-    rl.close();
-    await new Promise(() => {});
+    finishMcpSetup(rl);
     return;
   }
 
@@ -286,11 +303,7 @@ async function runMcpFlow(rl) {
     const overwrite = await ask(rl, "  x402-weather already exists in config. Overwrite? (y/n): ");
     if (overwrite.toLowerCase() !== "y") {
       console.log("  Keeping existing config.\n");
-      openUrl("http://localhost:4030");
-      console.log("  Opened http://localhost:4030");
-      console.log("\n  Press Ctrl+C to stop all servers.\n");
-      rl.close();
-      await new Promise(() => {});
+      finishMcpSetup(rl);
       return;
     }
   }
@@ -317,12 +330,7 @@ async function runMcpFlow(rl) {
     console.log("  Config not written. Add it manually if needed.\n");
   }
 
-  openUrl("http://localhost:4030");
-  console.log("  Opened http://localhost:4030");
-  console.log("\n  Setup complete. Press Ctrl+C to stop servers.\n");
-
-  rl.close();
-  await new Promise(() => {});
+  finishMcpSetup(rl);
 }
 
 async function main() {
