@@ -4,7 +4,9 @@
   "scripts": {
     "setup": "node bin/setup.js",
     "demo:http": "concurrently \"node x402/server.js\" \"npm run dev --prefix demo/http\"",
-    "demo:mcp": "npm run build --prefix demo/mcp && concurrently \"node x402/server.js\" \"node demo/mcp/dashboard.js\""
+    "demo:http-external": "concurrently \"node x402/facilitator.js\" \"node x402/server-external.js\" \"npm run dev --prefix demo/http\"",
+    "demo:mcp": "npm run build --prefix demo/mcp && concurrently \"node x402/server.js\" \"node demo/mcp/dashboard.js\"",
+    "demo:mcp-external": "npm run build --prefix demo/mcp && concurrently \"node x402/facilitator.js\" \"node x402/server-external.js\" \"node demo/mcp/dashboard.js\""
   },
   "dependencies": {
     "@x402/core": "^2.2.0",
