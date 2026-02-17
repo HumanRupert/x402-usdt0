@@ -23,16 +23,21 @@ export function verifyFirstMiddleware(httpServer, initPromiseHolder, { onEvent }
       initPromiseHolder.promise = null;
     }
 
-    // --- Verify phase ---
-    emit("verify_started", {
-      step: 6,
-      title: "Payment Verification Started",
-      description: "Facilitator is verifying the payment signature and requirements",
-      details: {
-        checks: ["Signature validity", "Signer balance", "Nonce uniqueness", "Valid time window"],
-      },
-      actor: "facilitator",
-    });
+    // Only emit lifecycle events when a payment is actually attached.
+    // The first bare request (no payment header) returns 402 silently.
+    const hasPayment = !!context.paymentHeader;
+
+    if (hasPayment) {
+      emit("verify_started", {
+        step: 6,
+        title: "Payment Verification Started",
+        description: "Facilitator is verifying the payment signature and requirements",
+        details: {
+          checks: ["Signature validity", "Signer balance", "Nonce uniqueness", "Valid time window"],
+        },
+        actor: "facilitator",
+      });
+    }
 
     const result = await httpServer.processHTTPRequest(context);
 
@@ -41,14 +46,16 @@ export function verifyFirstMiddleware(httpServer, initPromiseHolder, { onEvent }
         return next();
 
       case "payment-error": {
-        emit("verify_failed", {
-          step: 7,
-          title: "Verification Failed",
-          description: "Payment verification failed",
-          details: { status: result.response.status },
-          actor: "facilitator",
-          isError: true,
-        });
+        if (hasPayment) {
+          emit("verify_failed", {
+            step: 7,
+            title: "Verification Failed",
+            description: "Payment verification failed",
+            details: { status: result.response.status },
+            actor: "facilitator",
+            isError: true,
+          });
+        }
 
         const { response } = result;
         res.status(response.status);
