@@ -94,9 +94,13 @@ The adapter provides `readContract`, `writeContract`, `verifyTypedData`, `sendTr
 
 ## How the Demo Works
 
+### External Facilitator (Default)
+
+The resource server (`x402/server.js`) connects to an external facilitator service via HTTP. The facilitator (`x402/facilitator.js`) runs as a standalone service and pushes lifecycle events back to the resource server for SSE broadcasting:
+
 ### In-Process Facilitator
 
-Both the resource server and facilitator run in a single process (`x402/server.js`). The facilitator is created with lifecycle hooks that broadcast Server-Sent Events (SSE) to connected clients:
+Both the resource server and facilitator run in a single process (`x402/server-inprocess.js`). The facilitator is created with lifecycle hooks that broadcast Server-Sent Events (SSE) to connected clients:
 
 ```
 onBeforeVerify  → SSE: verify_started
@@ -152,6 +156,7 @@ cp .env.example .env
 |----------|-------------|
 | `MNEMONIC` | BIP-39 mnemonic seed phrase. The derived account must have USDT0 balance on Plasma. |
 | `PAY_TO_ADDRESS` | Ethereum address (0x...) to receive payments. |
+| `FACILITATOR_URL` | Facilitator service URL. Use `https://x402.semanticpay.io` for the hosted Semantic facilitator or `http://localhost:4022` for self-hosted. |
 
 ## HTTP Demo
 
@@ -161,7 +166,15 @@ Visualizes the full x402 payment flow in the browser with real on-chain transact
 npm run demo:http
 ```
 
-This starts the x402 server on :4021 and the React UI on :5173. Open http://localhost:5173 and click "Access Weather App" to trigger a real payment. Each request costs 0.0001 USDT0.
+This starts the facilitator on :4022, the x402 server on :4021, and the React UI on :5173. Open http://localhost:5173 and click "Access Weather App" to trigger a real payment. Each request costs 0.0001 USDT0.
+
+To use the Semantic hosted facilitator instead of running your own, set `FACILITATOR_URL=https://x402.semanticpay.io` in your `.env` and use:
+
+```bash
+npm run demo:http
+```
+
+The server will connect to the Semantic facilitator — no need to run facilitator.js locally.
 
 ## MCP Demo
 
@@ -173,7 +186,7 @@ Connects Claude Desktop to an x402-protected weather endpoint via MCP.
 npm run demo:mcp
 ```
 
-This builds the React dashboard, then starts the x402 server on :4021 and the dashboard on :4030.
+This builds the React dashboard, then starts the facilitator on :4022, the x402 server on :4021, and the dashboard on :4030.
 
 ### 2. Configure Claude Desktop
 
@@ -209,9 +222,9 @@ Restart Claude Desktop and ask it to "get the weather". Each tool call costs 0.0
 x402/
   config.js              Shared constants (USDT0 address, RPC URL, network ID, price)
   middleware.js           Verify-first payment middleware
-  server.js              Resource server with in-process facilitator and SSE events
-  server-external.js     Resource server using an external facilitator via HTTP
-  facilitator.js         Standalone facilitator service (for server-external.js)
+  server.js              Resource server using an external facilitator via HTTP (default)
+  server-inprocess.js    Resource server with in-process facilitator and SSE events
+  facilitator.js         Standalone facilitator service with SSE event forwarding
   client.js              CLI client that makes a paid request
 
 demo/
@@ -231,8 +244,10 @@ bin/
 | Script | Description |
 |--------|-------------|
 | `npm run setup` | Interactive setup wizard (creates .env, starts servers, configures Claude Desktop) |
-| `npm run demo:http` | Start x402 server and HTTP demo UI |
-| `npm run demo:mcp` | Build dashboard, start x402 server and MCP dashboard |
+| `npm run demo:http` | Start facilitator, x402 server, and HTTP demo UI |
+| `npm run demo:http-inprocess` | Start x402 server (in-process facilitator) and HTTP demo UI |
+| `npm run demo:mcp` | Build dashboard, start facilitator, x402 server, and MCP dashboard |
+| `npm run demo:mcp-inprocess` | Build dashboard, start x402 server (in-process facilitator) and MCP dashboard |
 
 ## Network
 

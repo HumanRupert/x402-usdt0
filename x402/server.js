@@ -1,13 +1,11 @@
 import { config } from "dotenv";
 import express from "express";
 import cors from "cors";
-import { x402Facilitator } from "@x402/core/facilitator";
-import { registerExactEvmScheme as registerFacilitatorScheme } from "@x402/evm/exact/facilitator";
 import { x402ResourceServer, x402HTTPResourceServer } from "@x402/express";
-import { ExactEvmScheme as ServerEvmScheme } from "@x402/evm/exact/server";
+import { ExactEvmScheme } from "@x402/evm/exact/server";
+import { HTTPFacilitatorClient } from "@x402/core/server";
 import { x402Client, wrapFetchWithPayment } from "@x402/fetch";
 import { registerExactEvmScheme as registerClientScheme } from "@x402/evm/exact/client";
-import WalletAccountEvmX402Facilitator from "@semanticpay/wdk-wallet-evm-x402-facilitator";
 import WalletManagerEvm from "@tetherto/wdk-wallet-evm";
 import { USDT0_ADDRESS, PLASMA_RPC, PLASMA_NETWORK, PRICE_UNITS } from "./config.js";
 import { verifyFirstMiddleware } from "./middleware.js";
@@ -17,6 +15,7 @@ config();
 const PORT = process.env.PORT || 4021;
 const MNEMONIC = process.env.MNEMONIC;
 const PAY_TO_ADDRESS = process.env.PAY_TO_ADDRESS;
+const FACILITATOR_URL = process.env.FACILITATOR_URL;
 
 if (!MNEMONIC) {
   console.error("MNEMONIC environment variable is required");
@@ -28,6 +27,13 @@ if (!PAY_TO_ADDRESS) {
   process.exit(1);
 }
 
+if (!FACILITATOR_URL) {
+  console.error("FACILITATOR_URL environment variable is required");
+  process.exit(1);
+}
+
+// --- SSE infrastructure ---
+
 const sseClients = new Set();
 
 function broadcastEvent(type, data = {}) {
@@ -36,99 +42,19 @@ function broadcastEvent(type, data = {}) {
   sseClients.forEach((client) => client.write(message));
 }
 
+// --- Wallet (for the demo client that initiates paid requests) ---
+
 const walletAccount = await new WalletManagerEvm(MNEMONIC, {
   provider: PLASMA_RPC,
 }).getAccount();
 
-const evmSigner = new WalletAccountEvmX402Facilitator(walletAccount);
+// --- External facilitator client ---
 
-const facilitator = new x402Facilitator()
-  .onBeforeVerify(async (context) => {
-    broadcastEvent("verify_started", {
-      step: 6,
-      title: "Payment Verification Started",
-      description: "Facilitator is verifying the payment signature and requirements",
-      details: {
-        network: context.requirements?.network,
-        checks: ["Signature validity", "Signer balance", "Nonce uniqueness", "Valid time window"],
-      },
-      actor: "facilitator",
-    });
-  })
-  .onAfterVerify(async (context) => {
-    broadcastEvent("verify_completed", {
-      step: 7,
-      title: "Payment Verified",
-      description: context.result?.isValid
-        ? "Payment signature and requirements verified successfully"
-        : "Payment verification failed",
-      details: {
-        isValid: context.result?.isValid,
-        network: context.requirements?.network,
-      },
-      actor: "facilitator",
-    });
-  })
-  .onVerifyFailure(async (context) => {
-    broadcastEvent("verify_failed", {
-      step: 7,
-      title: "Verification Failed",
-      description: `Payment verification failed: ${context.error?.message}`,
-      details: { error: context.error?.message },
-      actor: "facilitator",
-      isError: true,
-    });
-  })
-  .onBeforeSettle(async (context) => {
-    broadcastEvent("settle_started", {
-      step: 9,
-      title: "On-Chain Settlement Started",
-      description: "Broadcasting receiveWithAuthorization transaction to Plasma blockchain",
-      details: {
-        contract: `USDT0 (${USDT0_ADDRESS.slice(0, 6)}...${USDT0_ADDRESS.slice(-4)})`,
-        method: "receiveWithAuthorization",
-        chain: "Plasma (chainId: 9745)",
-        network: context.requirements?.network,
-      },
-      actor: "facilitator",
-      target: "blockchain",
-    });
-  })
-  .onAfterSettle(async (context) => {
-    const txHash = context.result?.transaction;
-    broadcastEvent("settle_completed", {
-      step: 10,
-      title: "Settlement Confirmed",
-      description: "Payment transaction confirmed on Plasma blockchain",
-      details: {
-        success: context.result?.success,
-        transactionHash: txHash,
-        explorerUrl: txHash ? `https://explorer.plasma.to/tx/${txHash}` : null,
-        network: context.requirements?.network,
-      },
-      actor: "blockchain",
-      target: "facilitator",
-    });
-  })
-  .onSettleFailure(async (context) => {
-    broadcastEvent("settle_failed", {
-      step: 10,
-      title: "Settlement Failed",
-      description: `On-chain settlement failed: ${context.error?.message}`,
-      details: { error: context.error?.message },
-      actor: "facilitator",
-      isError: true,
-    });
-  });
+const facilitatorClient = new HTTPFacilitatorClient({ url: FACILITATOR_URL });
 
-registerFacilitatorScheme(facilitator, {
-  signer: evmSigner,
-  networks: PLASMA_NETWORK,
-});
-
-const resourceServer = new x402ResourceServer(facilitator).register(
+const resourceServer = new x402ResourceServer(facilitatorClient).register(
   PLASMA_NETWORK,
-  new ServerEvmScheme()
+  new ExactEvmScheme()
 );
 
 const routes = {
@@ -153,9 +79,21 @@ const routes = {
 const httpServer = new x402HTTPResourceServer(resourceServer, routes);
 const initPromiseHolder = { promise: httpServer.initialize() };
 
+// --- Express app ---
+
 const app = express();
 app.use(cors());
+app.use(express.json());
 app.use(verifyFirstMiddleware(httpServer, initPromiseHolder));
+
+// Endpoint for the external facilitator to push lifecycle events
+app.post("/demo/events", (req, res) => {
+  const { type, ...data } = req.body;
+  if (type) {
+    broadcastEvent(type, data);
+  }
+  res.json({ ok: true });
+});
 
 app.get("/weather", (req, res) => {
   res.json({
@@ -323,7 +261,7 @@ app.get("/demo/status", (req, res) => {
     server: {
       status: "running",
       port: PORT,
-      facilitator: "in-process",
+      facilitator: `external (${FACILITATOR_URL})`,
       address: walletAccount.address,
       payTo: PAY_TO_ADDRESS,
     },
@@ -341,7 +279,7 @@ app.get("/health", (req, res) => {
     status: "ok",
     chain: "plasma",
     chainId: 9745,
-    facilitator: walletAccount.address,
+    facilitator: FACILITATOR_URL,
     payTo: PAY_TO_ADDRESS,
   });
 });
@@ -350,6 +288,6 @@ app.listen(PORT, () => {
   console.log(`x402 server running on http://localhost:${PORT}`);
   console.log(`Network: ${PLASMA_NETWORK}`);
   console.log(`USDT0: ${USDT0_ADDRESS}`);
-  console.log(`Facilitator: in-process (${walletAccount.address})`);
+  console.log(`Facilitator: ${FACILITATOR_URL}`);
   console.log(`Pay to: ${PAY_TO_ADDRESS}`);
 });

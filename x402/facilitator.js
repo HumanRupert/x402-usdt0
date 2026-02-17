@@ -10,6 +10,7 @@ config();
 
 const PORT = process.env.PORT || 4022;
 const MNEMONIC = process.env.MNEMONIC;
+const RESOURCE_SERVER_URL = process.env.RESOURCE_SERVER_URL || "http://localhost:4021";
 
 if (!MNEMONIC) {
   console.error("MNEMONIC environment variable is required");
@@ -22,27 +23,107 @@ const walletAccount = await new WalletManagerEvm(MNEMONIC, {
 
 const evmSigner = new WalletAccountEvmX402Facilitator(walletAccount);
 
+// Forward lifecycle events to the resource server for SSE broadcasting
+function pushEvent(payload) {
+  fetch(`${RESOURCE_SERVER_URL}/demo/events`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).catch(() => {});
+}
+
 const facilitator = new x402Facilitator()
   .onBeforeVerify(async (context) => {
     console.log("Before verify:", context.requirements?.network);
+    pushEvent({
+      type: "verify_started",
+      step: 6,
+      title: "Payment Verification Started",
+      description: "Facilitator is verifying the payment signature and requirements",
+      details: {
+        network: context.requirements?.network,
+        checks: ["Signature validity", "Signer balance", "Nonce uniqueness", "Valid time window"],
+      },
+      actor: "facilitator",
+    });
   })
   .onAfterVerify(async (context) => {
     console.log("After verify - valid:", context.result?.isValid);
+    pushEvent({
+      type: "verify_completed",
+      step: 7,
+      title: "Payment Verified",
+      description: context.result?.isValid
+        ? "Payment signature and requirements verified successfully"
+        : "Payment verification failed",
+      details: {
+        isValid: context.result?.isValid,
+        network: context.requirements?.network,
+      },
+      actor: "facilitator",
+    });
   })
   .onVerifyFailure(async (context) => {
     console.log("Verify failure:", context.error);
+    pushEvent({
+      type: "verify_failed",
+      step: 7,
+      title: "Verification Failed",
+      description: `Payment verification failed: ${context.error?.message}`,
+      details: { error: context.error?.message },
+      actor: "facilitator",
+      isError: true,
+    });
   })
   .onBeforeSettle(async (context) => {
     console.log("Before settle:", context.requirements?.network);
+    pushEvent({
+      type: "settle_started",
+      step: 9,
+      title: "On-Chain Settlement Started",
+      description: "Broadcasting receiveWithAuthorization transaction to Plasma blockchain",
+      details: {
+        contract: `USDT0 (${USDT0_ADDRESS.slice(0, 6)}...${USDT0_ADDRESS.slice(-4)})`,
+        method: "receiveWithAuthorization",
+        chain: "Plasma (chainId: 9745)",
+        network: context.requirements?.network,
+      },
+      actor: "facilitator",
+      target: "blockchain",
+    });
   })
   .onAfterSettle(async (context) => {
+    const txHash = context.result?.transaction;
     console.log("After settle - success:", context.result?.success);
-    if (context.result?.transaction) {
-      console.log("Transaction:", context.result.transaction);
+    if (txHash) {
+      console.log("Transaction:", txHash);
     }
+    pushEvent({
+      type: "settle_completed",
+      step: 10,
+      title: "Settlement Confirmed",
+      description: "Payment transaction confirmed on Plasma blockchain",
+      details: {
+        success: context.result?.success,
+        transactionHash: txHash,
+        explorerUrl: txHash ? `https://explorer.plasma.to/tx/${txHash}` : null,
+        network: context.requirements?.network,
+      },
+      actor: "blockchain",
+      target: "facilitator",
+    });
   })
   .onSettleFailure(async (context) => {
     console.log("Settle failure:", context.error);
+    pushEvent({
+      type: "settle_failed",
+      step: 10,
+      title: "Settlement Failed",
+      description: `On-chain settlement failed: ${context.error?.message}`,
+      details: { error: context.error?.message },
+      actor: "facilitator",
+      isError: true,
+    });
   });
 
 registerExactEvmScheme(facilitator, {
@@ -112,4 +193,5 @@ app.listen(parseInt(PORT), () => {
   console.log(`Network: ${PLASMA_NETWORK}`);
   console.log(`USDT0: ${USDT0_ADDRESS}`);
   console.log(`Account: ${walletAccount.address}`);
+  console.log(`Event sink: ${RESOURCE_SERVER_URL}/demo/events`);
 });

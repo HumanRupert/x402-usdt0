@@ -131,6 +131,8 @@ function mergeClaudeConfig(existing, entry) {
   return merged;
 }
 
+const SEMANTIC_FACILITATOR_URL = "https://x402.semanticpay.io";
+
 async function collectEnvVars(rl) {
   console.log("  Environment Variables\n");
 
@@ -156,11 +158,37 @@ async function collectEnvVars(rl) {
   return { mnemonic, payTo };
 }
 
+async function chooseFacilitator(rl) {
+  console.log(`  Facilitator\n`);
+  console.log(`  1) Semantic  - Use the hosted Semantic facilitator (${SEMANTIC_FACILITATOR_URL})`);
+  console.log(`  2) Self-hosted - Run your own facilitator locally\n`);
+
+  const choice = await ask(rl, "  Choice (1 or 2): ", "1");
+
+  if (choice === "2") {
+    return { selfHosted: true, url: "http://localhost:4022" };
+  }
+  return { selfHosted: false, url: SEMANTIC_FACILITATOR_URL };
+}
+
 async function runHttpFlow(rl) {
   console.log("\n  HTTP Demo Setup\n");
 
   const { mnemonic, payTo } = await collectEnvVars(rl);
-  await writeEnvFile(rl, { MNEMONIC: mnemonic, PAY_TO_ADDRESS: payTo });
+  const facilitator = await chooseFacilitator(rl);
+
+  await writeEnvFile(rl, {
+    MNEMONIC: mnemonic,
+    PAY_TO_ADDRESS: payTo,
+    FACILITATOR_URL: facilitator.url,
+  });
+
+  if (facilitator.selfHosted) {
+    console.log("  Starting facilitator...");
+    const fac = spawnBackground("facilitator", "node", ["x402/facilitator.js"]);
+    await fac.ready;
+    console.log();
+  }
 
   console.log("  Starting x402 server...");
   const server = spawnBackground("server", "node", ["x402/server.js"]);
@@ -183,7 +211,13 @@ async function runMcpFlow(rl) {
   console.log("\n  MCP Demo Setup\n");
 
   const { mnemonic, payTo } = await collectEnvVars(rl);
-  await writeEnvFile(rl, { MNEMONIC: mnemonic, PAY_TO_ADDRESS: payTo });
+  const facilitator = await chooseFacilitator(rl);
+
+  await writeEnvFile(rl, {
+    MNEMONIC: mnemonic,
+    PAY_TO_ADDRESS: payTo,
+    FACILITATOR_URL: facilitator.url,
+  });
 
   console.log("  Building dashboard UI...");
   try {
@@ -191,6 +225,13 @@ async function runMcpFlow(rl) {
     console.log("  Dashboard built\n");
   } catch {
     console.log("  Dashboard build failed (dashboard will run without pre-built UI)\n");
+  }
+
+  if (facilitator.selfHosted) {
+    console.log("  Starting facilitator...");
+    const fac = spawnBackground("facilitator", "node", ["x402/facilitator.js"]);
+    await fac.ready;
+    console.log();
   }
 
   console.log("  Starting x402 server...");

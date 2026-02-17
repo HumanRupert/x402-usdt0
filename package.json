@@ -3,10 +3,10 @@
   "type": "module",
   "scripts": {
     "setup": "node bin/setup.js",
-    "demo:http": "concurrently \"node x402/server.js\" \"npm run dev --prefix demo/http\"",
-    "demo:http-external": "concurrently \"node x402/facilitator.js\" \"node x402/server-external.js\" \"npm run dev --prefix demo/http\"",
-    "demo:mcp": "npm run build --prefix demo/mcp && concurrently \"node x402/server.js\" \"node demo/mcp/dashboard.js\"",
-    "demo:mcp-external": "npm run build --prefix demo/mcp && concurrently \"node x402/facilitator.js\" \"node x402/server-external.js\" \"node demo/mcp/dashboard.js\""
+    "demo:http": "concurrently \"node x402/facilitator.js\" \"node x402/server.js\" \"npm run dev --prefix demo/http\"",
+    "demo:http-inprocess": "concurrently \"node x402/server-inprocess.js\" \"npm run dev --prefix demo/http\"",
+    "demo:mcp": "npm run build --prefix demo/mcp && concurrently \"node x402/facilitator.js\" \"node x402/server.js\" \"node demo/mcp/dashboard.js\"",
+    "demo:mcp-inprocess": "npm run build --prefix demo/mcp && concurrently \"node x402/server-inprocess.js\" \"node demo/mcp/dashboard.js\""
   },
   "dependencies": {
     "@x402/core": "^2.2.0",
@@ -15,7 +15,7 @@
     "@x402/fetch": "^2.2.0",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "@semanticpay/wdk-wallet-evm-x402-facilitator": "github:SemanticPay/wdk-wallet-evm-x402-facilitator",
-    "@tetherto/wdk-wallet-evm": "github:HumanRupert/wdk-wallet-evm#feat/add-typedData",
+    "@tetherto/wdk-wallet-evm": "^0.2.0",
     "cors": "^2.8.6",
     "dotenv": "^17.2.3",
     "express": "^5.2.1"
