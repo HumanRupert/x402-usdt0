@@ -1,4 +1,5 @@
 import { config } from "dotenv";
+import { AsyncLocalStorage } from "node:async_hooks";
 import express from "express";
 import { x402Facilitator } from "@x402/core/facilitator";
 import { registerExactEvmScheme } from "@x402/evm/exact/facilitator";
@@ -10,7 +11,6 @@ config();
 
 const PORT = process.env.PORT || 4022;
 const MNEMONIC = process.env.MNEMONIC;
-const RESOURCE_SERVER_URL = process.env.RESOURCE_SERVER_URL || "http://localhost:4021";
 
 if (!MNEMONIC) {
   console.error("MNEMONIC environment variable is required");
@@ -23,9 +23,16 @@ const walletAccount = await new WalletManagerEvm(MNEMONIC, {
 
 const evmSigner = new WalletAccountEvmX402Facilitator(walletAccount);
 
-// Forward lifecycle events to the resource server for SSE broadcasting
+// --- Lifecycle event callback via X-Event-Callback header ---
+// The resource server sends X-Event-Callback header with each /verify and /settle request.
+// AsyncLocalStorage threads the callback URL into lifecycle hooks without global state.
+
+const callbackStore = new AsyncLocalStorage();
+
 function pushEvent(payload) {
-  fetch(`${RESOURCE_SERVER_URL}/demo/events`, {
+  const callbackUrl = callbackStore.getStore();
+  if (!callbackUrl) return;
+  fetch(callbackUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -135,12 +142,15 @@ const app = express();
 app.use(express.json());
 
 app.post("/verify", async (req, res) => {
+  const callbackUrl = req.headers["x-event-callback"];
   try {
     const { paymentPayload, paymentRequirements } = req.body;
     if (!paymentPayload || !paymentRequirements) {
       return res.status(400).json({ error: "Missing paymentPayload or paymentRequirements" });
     }
-    const response = await facilitator.verify(paymentPayload, paymentRequirements);
+    const response = await callbackStore.run(callbackUrl, () =>
+      facilitator.verify(paymentPayload, paymentRequirements)
+    );
     res.json(response);
   } catch (error) {
     console.error("Verify error:", error);
@@ -149,12 +159,15 @@ app.post("/verify", async (req, res) => {
 });
 
 app.post("/settle", async (req, res) => {
+  const callbackUrl = req.headers["x-event-callback"];
   try {
     const { paymentPayload, paymentRequirements } = req.body;
     if (!paymentPayload || !paymentRequirements) {
       return res.status(400).json({ error: "Missing paymentPayload or paymentRequirements" });
     }
-    const response = await facilitator.settle(paymentPayload, paymentRequirements);
+    const response = await callbackStore.run(callbackUrl, () =>
+      facilitator.settle(paymentPayload, paymentRequirements)
+    );
     res.json(response);
   } catch (error) {
     console.error("Settle error:", error);
@@ -193,5 +206,4 @@ app.listen(parseInt(PORT), () => {
   console.log(`Network: ${PLASMA_NETWORK}`);
   console.log(`USDT0: ${USDT0_ADDRESS}`);
   console.log(`Account: ${walletAccount.address}`);
-  console.log(`Event sink: ${RESOURCE_SERVER_URL}/demo/events`);
 });
