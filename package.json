@@ -15,7 +15,7 @@
     "@x402/fetch": "^2.2.0",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "@semanticpay/wdk-wallet-evm-x402-facilitator": "github:SemanticPay/wdk-wallet-evm-x402-facilitator",
-    "@tetherto/wdk-wallet-evm": "^0.2.0",
+    "@tetherto/wdk-wallet-evm": "latest",
     "cors": "^2.8.6",
     "dotenv": "^17.2.3",
     "express": "^5.2.1"

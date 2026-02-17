@@ -49,20 +49,8 @@ const walletAccount = await new WalletManagerEvm(MNEMONIC, {
 }).getAccount();
 
 // --- External facilitator client ---
-// Pass X-Event-Callback header so the facilitator knows where to POST lifecycle events
 
-const EVENT_CALLBACK_URL = `http://localhost:${PORT}/demo/events`;
-
-const eventCallbackHeaders = { "X-Event-Callback": EVENT_CALLBACK_URL };
-
-const facilitatorClient = new HTTPFacilitatorClient({
-  url: FACILITATOR_URL,
-  createAuthHeaders: async () => ({
-    verify: eventCallbackHeaders,
-    settle: eventCallbackHeaders,
-    supported: {},
-  }),
-});
+const facilitatorClient = new HTTPFacilitatorClient({ url: FACILITATOR_URL });
 
 const resourceServer = new x402ResourceServer(facilitatorClient).register(
   PLASMA_NETWORK,
@@ -96,16 +84,7 @@ const initPromiseHolder = { promise: httpServer.initialize() };
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use(verifyFirstMiddleware(httpServer, initPromiseHolder));
-
-// Endpoint for the external facilitator to push lifecycle events
-app.post("/demo/events", (req, res) => {
-  const { type, ...data } = req.body;
-  if (type) {
-    broadcastEvent(type, data);
-  }
-  res.json({ ok: true });
-});
+app.use(verifyFirstMiddleware(httpServer, initPromiseHolder, { onEvent: broadcastEvent }));
 
 app.get("/weather", (req, res) => {
   res.json({
