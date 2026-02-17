@@ -84,7 +84,7 @@ const initPromiseHolder = { promise: httpServer.initialize() };
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use(verifyFirstMiddleware(httpServer, initPromiseHolder));
+app.use(verifyFirstMiddleware(httpServer, initPromiseHolder, broadcastEvent));
 
 // Endpoint for the external facilitator to push lifecycle events
 app.post("/demo/events", (req, res) => {
