@@ -155,7 +155,7 @@ const initPromiseHolder = { promise: httpServer.initialize() };
 
 const app = express();
 app.use(cors());
-app.use(verifyFirstMiddleware(httpServer, initPromiseHolder, broadcastEvent));
+app.use(verifyFirstMiddleware(httpServer, initPromiseHolder));
 
 app.get("/weather", (req, res) => {
   res.json({
